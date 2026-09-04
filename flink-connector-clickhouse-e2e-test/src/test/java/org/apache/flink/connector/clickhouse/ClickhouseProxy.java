@@ -132,6 +132,31 @@ public class ClickhouseProxy implements AutoCloseable {
         }
     }
 
+    public long waitForRowCountAtLeast(String table, long minimum, long timeoutMillis)
+            throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        long count = 0L;
+        while (System.currentTimeMillis() < deadline) {
+            count = getRowCount(table);
+            if (count >= minimum) {
+                return count;
+            }
+            Thread.sleep(500L);
+        }
+        Assert.fail(
+                String.format(
+                        "Expected at least %d rows in %s, but found %d", minimum, table, count));
+        return count;
+    }
+
+    private long getRowCount(String table) throws SQLException {
+        connect();
+        try (ResultSet resultSet = statement.executeQuery("select count() from " + table)) {
+            resultSet.next();
+            return resultSet.getLong(1);
+        }
+    }
+
     @Override
     public void close() {
         if (statement != null) {

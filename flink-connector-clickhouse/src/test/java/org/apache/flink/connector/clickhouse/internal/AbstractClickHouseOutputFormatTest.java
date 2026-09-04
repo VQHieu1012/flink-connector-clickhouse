@@ -69,22 +69,26 @@ public class AbstractClickHouseOutputFormatTest {
         MetricGroup clickHouseMetrics = mock(MetricGroup.class);
         SimpleCounter recordsSent = new SimpleCounter();
         SimpleCounter recordErrors = new SimpleCounter();
+        SimpleCounter bytesSent = new SimpleCounter();
         SimpleCounter batchesSent = new SimpleCounter();
         SimpleCounter batchErrors = new SimpleCounter();
         when(metricGroup.getNumRecordsSendCounter()).thenReturn(recordsSent);
         when(metricGroup.getNumRecordsSendErrorsCounter()).thenReturn(recordErrors);
+        when(metricGroup.getNumBytesSendCounter()).thenReturn(bytesSent);
         when(metricGroup.addGroup("clickhouse")).thenReturn(clickHouseMetrics);
         when(clickHouseMetrics.counter("batchesSent")).thenReturn(batchesSent);
         when(clickHouseMetrics.counter("batchesSendErrors")).thenReturn(batchErrors);
         when(clickHouseMetrics.counter("retries")).thenReturn(new SimpleCounter());
         format.initializeMetrics(metricGroup);
         ClickHouseExecutor executor = mock(ClickHouseExecutor.class);
+        when(executor.getBufferedBytes()).thenReturn(30L, 20L);
 
         format.checkBeforeFlush(executor, 3L);
         doThrow(new java.sql.SQLException("expected")).when(executor).executeBatch();
         assertThrows(IOException.class, () -> format.checkBeforeFlush(executor, 2L));
 
         assertEquals(3L, recordsSent.getCount());
+        assertEquals(30L, bytesSent.getCount());
         assertEquals(2L, recordErrors.getCount());
         assertEquals(1L, batchesSent.getCount());
         assertEquals(1L, batchErrors.getCount());
@@ -97,6 +101,7 @@ public class AbstractClickHouseOutputFormatTest {
         when(context.metricGroup()).thenReturn(metricGroup);
         when(metricGroup.getNumRecordsSendCounter()).thenReturn(new SimpleCounter());
         when(metricGroup.getNumRecordsSendErrorsCounter()).thenReturn(new SimpleCounter());
+        when(metricGroup.getNumBytesSendCounter()).thenReturn(new SimpleCounter());
         when(metricGroup.addGroup("clickhouse")).thenReturn(clickHouseMetrics);
         when(clickHouseMetrics.counter("batchesSent")).thenReturn(new SimpleCounter());
         when(clickHouseMetrics.counter("batchesSendErrors")).thenReturn(new SimpleCounter());

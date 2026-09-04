@@ -17,6 +17,7 @@
 
 package org.apache.flink.connector.clickhouse;
 
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.client.deployment.StandaloneClusterId;
@@ -24,6 +25,7 @@ import org.apache.flink.client.program.rest.RestClusterClient;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.runtime.client.JobStatusMessage;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.test.resources.ResourceTestUtils;
 import org.apache.flink.test.util.SQLJobSubmission;
@@ -35,6 +37,7 @@ import org.junit.rules.TemporaryFolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.clickhouse.ClickHouseContainer;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
@@ -48,6 +51,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -98,6 +102,9 @@ public class FlinkContainerEnvironment {
     @Before
     public void setUp() throws Exception {
         CLICKHOUSE_CONTAINER.start();
+        Path checkpointDirectory = temporaryFolder.newFolder("checkpoints").toPath();
+        Files.setPosixFilePermissions(
+                checkpointDirectory, PosixFilePermissions.fromString("rwxrwxrwx"));
 
         String properties =
                 String.join(
@@ -105,7 +112,12 @@ public class FlinkContainerEnvironment {
                         Arrays.asList(
                                 "jobmanager.rpc.address: jobmanager",
                                 "heartbeat.timeout: 60000",
-                                "parallelism.default: 1"));
+                                "parallelism.default: 1",
+                                "execution.checkpointing.storage: filesystem",
+                                "execution.checkpointing.dir: file:///tmp/flink-checkpoints",
+                                "restart-strategy.type: fixed-delay",
+                                "restart-strategy.fixed-delay.attempts: 10",
+                                "restart-strategy.fixed-delay.delay: 1 s"));
         jobManager =
                 new GenericContainer<>(DockerImageName.parse("flink:2.1.0-scala_2.12-java17"))
                         .withCommand("jobmanager")
@@ -113,6 +125,10 @@ public class FlinkContainerEnvironment {
                         .withExtraHost("host.docker.internal", "host-gateway")
                         .withNetworkAliases("jobmanager")
                         .withExposedPorts(8081, 6123)
+                        .withFileSystemBind(
+                                checkpointDirectory.toString(),
+                                "/tmp/flink-checkpoints",
+                                BindMode.READ_WRITE)
                         .dependsOn(CLICKHOUSE_CONTAINER)
                         .withLabel("com.testcontainers.allow-filesystem-access", "true")
                         .withEnv("FLINK_PROPERTIES", properties)
@@ -127,6 +143,10 @@ public class FlinkContainerEnvironment {
                         .withExtraHost("host.docker.internal", "host-gateway")
                         .withNetwork(NETWORK)
                         .withNetworkAliases("taskmanager")
+                        .withFileSystemBind(
+                                checkpointDirectory.toString(),
+                                "/tmp/flink-checkpoints",
+                                BindMode.READ_WRITE)
                         .withEnv("FLINK_PROPERTIES", properties)
                         .dependsOn(jobManager)
                         .withLabel("com.testcontainers.allow-filesystem-access", "true")
@@ -219,7 +239,7 @@ public class FlinkContainerEnvironment {
         return containerPath;
     }
 
-    public void waitUntilJobRunning(Duration timeout) {
+    public JobID waitUntilJobRunning(Duration timeout) {
         RestClusterClient<?> clusterClient = getRestClusterClient();
         Deadline deadline = Deadline.fromNow(timeout);
         while (deadline.hasTimeLeft()) {
@@ -234,17 +254,38 @@ public class FlinkContainerEnvironment {
                 JobStatusMessage message = jobStatusMessages.iterator().next();
                 JobStatus jobStatus = message.getJobState();
                 if (jobStatus == JobStatus.RUNNING || jobStatus == JobStatus.FINISHED) {
-                    return;
+                    return message.getJobId();
                 } else if (jobStatus.isTerminalState()) {
+                    String failureDetails = getJobFailureDetails(clusterClient, message.getJobId());
                     throw new ValidationException(
                             String.format(
-                                    "Job has been terminated! JobName: %s, JobID: %s, Status: %s",
+                                    "Job has been terminated! JobName: %s, JobID: %s, Status: %s%n%s",
                                     message.getJobName(),
                                     message.getJobId(),
-                                    message.getJobState()));
+                                    message.getJobState(),
+                                    failureDetails));
                 }
             }
         }
         throw new AssertionError("Flink job did not start within " + timeout);
+    }
+
+    private String getJobFailureDetails(RestClusterClient<?> clusterClient, JobID jobId) {
+        try {
+            JobResult jobResult = clusterClient.requestJobResult(jobId).get(10, TimeUnit.SECONDS);
+            return jobResult
+                    .getSerializedThrowable()
+                    .map(throwable -> throwable.getFullStringifiedStackTrace())
+                    .orElse("No failure details were reported by Flink.");
+        } catch (Exception e) {
+            logger.warn("Unable to fetch failure details for job {}.", jobId, e);
+            return "Unable to fetch failure details: " + e.getMessage();
+        }
+    }
+
+    public void restartTaskManager() {
+        checkState(taskManager != null && taskManager.isRunning(), "TaskManager must be running");
+        taskManager.stop();
+        taskManager.start();
     }
 }

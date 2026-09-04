@@ -12,7 +12,7 @@ but a batch can be replayed when ClickHouse accepts it before the corresponding 
 completes. See the [production-readiness plan](docs/production-readiness.md) for guarantees,
 remaining work, and release gates.
 
-The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, and
+The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `numBytesSend`, and
 `currentSendTime` metrics. Under the `clickhouse` metric group it also exposes `batchesSent`,
 `batchesSendErrors`, `retries`, `bufferedRecords`, and `bufferedBytes`.
 
@@ -59,6 +59,22 @@ The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, and
    true.
 2. The data is updated and deleted by the primary key, please be aware of this when using it in the
    partition table.
+3. `UPDATE_AFTER` and `DELETE` are implemented with ClickHouse `ALTER TABLE ... UPDATE/DELETE`
+   mutations. These are substantially more expensive than inserts and are asynchronous by default.
+   If downstream correctness requires waiting for completion, pass an appropriate
+   `properties.mutations_sync` value and account for the resulting write latency.
+
+## Verified Compatibility
+
+| Component        | Verified version |
+|:-----------------|:-----------------|
+| Flink            | 2.1.0            |
+| Java             | 17               |
+| ClickHouse       | 24.8             |
+| clickhouse-jdbc  | 0.6.4            |
+
+This matrix records the containerized combination exercised by this repository; other versions
+are not implied to be incompatible, but must pass the same unit and E2E suites before release.
 
 **breaking**
 

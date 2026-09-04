@@ -37,7 +37,9 @@ import com.clickhouse.jdbc.ClickHousePreparedStatement;
 import org.junit.Test;
 
 import java.sql.SQLException;
+import java.sql.SQLRecoverableException;
 import java.sql.SQLTransientException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 import static org.junit.Assert.assertEquals;
@@ -106,6 +108,29 @@ public class ClickHouseUpsertExecutorTest {
         assertEquals(0L, retries.getCount());
         assertTrue(ClickHouseExecutor.isRetryable(new SQLException("connection", "08006")));
         assertFalse(ClickHouseExecutor.isRetryable(new SQLException("data", "22000")));
+    }
+
+    @Test
+    public void documentsDuplicateOnAmbiguousPostCommitFailure() throws Exception {
+        ClickHouseExecutor executor = mock(ClickHouseExecutor.class, CALLS_REAL_METHODS);
+        AtomicInteger acceptedBatches = new AtomicInteger();
+        AtomicInteger attempts = new AtomicInteger();
+        SimpleCounter retries = new SimpleCounter();
+
+        executor.attemptExecuteBatch(
+                () -> {
+                    acceptedBatches.incrementAndGet();
+                    if (attempts.getAndIncrement() == 0) {
+                        throw new SQLRecoverableException(
+                                "response lost after server accepted batch");
+                    }
+                },
+                1,
+                retries,
+                () -> {});
+
+        assertEquals(2, acceptedBatches.get());
+        assertEquals(1L, retries.getCount());
     }
 
     @Test

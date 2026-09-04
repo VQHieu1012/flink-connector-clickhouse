@@ -81,6 +81,8 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
 
     private transient Counter numRecordsSendErrorsCounter;
 
+    private transient Counter numBytesSendCounter;
+
     private transient Counter numBatchesSendCounter;
 
     private transient Counter numBatchesSendErrorsCounter;
@@ -99,6 +101,7 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
     void initializeMetrics(SinkWriterMetricGroup metricGroup) {
         numRecordsSendCounter = metricGroup.getNumRecordsSendCounter();
         numRecordsSendErrorsCounter = metricGroup.getNumRecordsSendErrorsCounter();
+        numBytesSendCounter = metricGroup.getNumBytesSendCounter();
         MetricGroup clickHouseMetrics = metricGroup.addGroup("clickhouse");
         numBatchesSendCounter = clickHouseMetrics.counter("batchesSent");
         numBatchesSendErrorsCounter = clickHouseMetrics.counter("batchesSendErrors");
@@ -151,12 +154,14 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
     public void checkBeforeFlush(final ClickHouseExecutor executor, long pendingRecords)
             throws IOException {
         checkFlushException();
+        long pendingBytes = executor.getBufferedBytes();
         if (currentSendStartNanos != null) {
             currentSendStartNanos.set(System.nanoTime());
         }
         try {
             executor.executeBatch();
             increment(numRecordsSendCounter, pendingRecords);
+            increment(numBytesSendCounter, pendingBytes);
             increment(numBatchesSendCounter, 1L);
         } catch (Exception e) {
             increment(numRecordsSendErrorsCounter, pendingRecords);
