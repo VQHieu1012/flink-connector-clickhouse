@@ -7,6 +7,15 @@ by [ClickHouse JDBC](https://github.com/ClickHouse/clickhouse-jdbc).
 Currently, the project supports `Source/Sink Table` and `Flink Catalog`.  
 Please create issues if you encounter bugs and any help for the project is greatly appreciated.
 
+The sink currently provides at-least-once delivery. A checkpoint flushes pending JDBC batches,
+but a batch can be replayed when ClickHouse accepts it before the corresponding checkpoint
+completes. See the [production-readiness plan](docs/production-readiness.md) for guarantees,
+remaining work, and release gates.
+
+The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, and
+`currentSendTime` metrics. Under the `clickhouse` metric group it also exposes `batchesSent`,
+`batchesSendErrors`, `retries`, `bufferedRecords`, and `bufferedBytes`.
+
 ## Connector Options
 
 | Option                                   | Required | Default  | Type     | Description                                                                                                                                                                     |
@@ -18,8 +27,11 @@ Please create issues if you encounter bugs and any help for the project is great
 | table-name                               | required | none     | String   | The ClickHouse table name.                                                                                                                                                      |
 | use-local                                | optional | false    | Boolean  | Directly read/write local tables in case of distributed table engine.                                                                                                           |
 | sink.batch-size                          | optional | 1000     | Integer  | The max flush size, over this will flush data.                                                                                                                                  |
+| sink.max-buffered-bytes                  | optional | 64mb     | Memory   | Estimated maximum serialized size of rows retained by each sink writer before flushing.                                                                                        |
 | sink.flush-interval                      | optional | 1s       | Duration | Over this flush interval mills, asynchronous threads will flush data.                                                                                                           |
 | sink.max-retries                         | optional | 3        | Integer  | The max retry times when writing records to the database failed.                                                                                                                |
+| sink.connection-timeout                  | optional | 10s      | Duration | Timeout for establishing a ClickHouse sink connection. Can be overridden by `properties.connection_timeout`.                                                                   |
+| sink.socket-timeout                      | optional | 5min     | Duration | Socket timeout for ClickHouse sink requests. Can be overridden by `properties.socket_timeout`.                                                                                  |
 | ~~sink.write-local~~                     | optional | false    | Boolean  | Removed from version 1.15, use `use-local` instead.                                                                                                                             |
 | sink.update-strategy                     | optional | update   | String   | Convert a record of type UPDATE_AFTER to update/insert statement or just discard it, available: update, insert, discard.                                                        |
 | sink.partition-strategy                  | optional | balanced | String   | Partition strategy: balanced(round-robin), hash(partition key), shuffle(random).                                                                                                |

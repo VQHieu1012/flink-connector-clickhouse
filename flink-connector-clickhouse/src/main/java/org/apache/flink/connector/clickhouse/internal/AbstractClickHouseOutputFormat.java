@@ -28,6 +28,9 @@ import org.apache.flink.connector.clickhouse.internal.schema.DistributedEngineFu
 import org.apache.flink.connector.clickhouse.internal.schema.Expression;
 import org.apache.flink.connector.clickhouse.internal.schema.FieldExpr;
 import org.apache.flink.connector.clickhouse.internal.schema.FunctionExpr;
+import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.RowData.FieldGetter;
 import org.apache.flink.table.types.DataType;
@@ -50,6 +53,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
@@ -73,12 +77,55 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
 
     protected transient volatile Exception flushException;
 
+    private transient Counter numRecordsSendCounter;
+
+    private transient Counter numRecordsSendErrorsCounter;
+
+    private transient Counter numBatchesSendCounter;
+
+    private transient Counter numBatchesSendErrorsCounter;
+
+    private transient Counter numRetriesCounter;
+
+    private transient AtomicLong currentSendStartNanos;
+
     public AbstractClickHouseOutputFormat() {}
 
     protected abstract void open() throws IOException;
 
     @Override
     public void configure(Configuration parameters) {}
+
+    void initializeMetrics(SinkWriterMetricGroup metricGroup) {
+        numRecordsSendCounter = metricGroup.getNumRecordsSendCounter();
+        numRecordsSendErrorsCounter = metricGroup.getNumRecordsSendErrorsCounter();
+        MetricGroup clickHouseMetrics = metricGroup.addGroup("clickhouse");
+        numBatchesSendCounter = clickHouseMetrics.counter("batchesSent");
+        numBatchesSendErrorsCounter = clickHouseMetrics.counter("batchesSendErrors");
+        numRetriesCounter = clickHouseMetrics.counter("retries");
+        clickHouseMetrics.gauge("bufferedRecords", this::getBufferedRecordCount);
+        clickHouseMetrics.gauge("bufferedBytes", this::getBufferedBytes);
+        currentSendStartNanos = new AtomicLong();
+        metricGroup.setCurrentSendTimeGauge(
+                () -> {
+                    long startNanos = currentSendStartNanos.get();
+                    return startNanos == 0L
+                            ? 0L
+                            : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+                });
+    }
+
+    protected Counter getNumRetriesCounter() {
+        return numRetriesCounter;
+    }
+
+    protected long getBufferedRecordCount() {
+        return 0L;
+    }
+
+    protected long getBufferedBytes() {
+        return 0L;
+    }
 
     public void scheduledFlush(long intervalMillis, String executorName) {
         Preconditions.checkArgument(intervalMillis > 0, "flush interval must be greater than 0");
@@ -101,40 +148,80 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
                         TimeUnit.MILLISECONDS);
     }
 
-    public void checkBeforeFlush(final ClickHouseExecutor executor) throws IOException {
+    public void checkBeforeFlush(final ClickHouseExecutor executor, long pendingRecords)
+            throws IOException {
         checkFlushException();
+        if (currentSendStartNanos != null) {
+            currentSendStartNanos.set(System.nanoTime());
+        }
         try {
             executor.executeBatch();
+            increment(numRecordsSendCounter, pendingRecords);
+            increment(numBatchesSendCounter, 1L);
         } catch (Exception e) {
+            increment(numRecordsSendErrorsCounter, pendingRecords);
+            increment(numBatchesSendErrorsCounter, 1L);
             throw new IOException(e);
+        } finally {
+            if (currentSendStartNanos != null) {
+                currentSendStartNanos.set(0L);
+            }
+        }
+    }
+
+    private static void increment(Counter counter, long value) {
+        if (counter != null) {
+            counter.inc(value);
         }
     }
 
     @Override
-    public synchronized void close() {
+    public synchronized void close() throws IOException {
         if (!closed) {
             closed = true;
-
+            IOException failure = null;
             try {
+                checkFlushException();
                 flush();
             } catch (Exception exception) {
-                LOG.warn("Flushing records to ClickHouse failed.", exception);
+                failure = asIOException("Flushing records to ClickHouse failed.", exception);
+            } finally {
+                if (scheduledFuture != null) {
+                    scheduledFuture.cancel(false);
+                }
+                if (scheduler != null) {
+                    scheduler.shutdown();
+                }
+
+                try {
+                    closeOutputFormat();
+                } catch (Exception exception) {
+                    IOException closeFailure =
+                            asIOException("Closing ClickHouse output format failed.", exception);
+                    if (failure == null) {
+                        failure = closeFailure;
+                    } else {
+                        failure.addSuppressed(closeFailure);
+                    }
+                }
             }
 
-            if (scheduledFuture != null) {
-                scheduledFuture.cancel(false);
-                this.scheduler.shutdown();
+            if (failure != null) {
+                throw failure;
             }
-
-            closeOutputFormat();
-            checkFlushException();
         }
     }
 
-    protected void checkFlushException() {
+    protected void checkFlushException() throws IOException {
         if (flushException != null) {
-            throw new RuntimeException("Flush exception found.", flushException);
+            throw asIOException("Asynchronous ClickHouse flush failed.", flushException);
         }
+    }
+
+    private IOException asIOException(String message, Exception exception) {
+        return exception instanceof IOException
+                ? (IOException) exception
+                : new IOException(message, exception);
     }
 
     protected abstract void closeOutputFormat();

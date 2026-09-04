@@ -1,3 +1,20 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.flink.connector.clickhouse;
 
 import org.apache.flink.api.common.JobStatus;
@@ -11,6 +28,7 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.test.resources.ResourceTestUtils;
 import org.apache.flink.test.util.SQLJobSubmission;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TemporaryFolder;
@@ -47,7 +65,7 @@ public class FlinkContainerEnvironment {
     public static final Network NETWORK = Network.newNetwork();
 
     static final ClickHouseContainer CLICKHOUSE_CONTAINER =
-            new ClickHouseContainer("clickhouse/clickhouse-server:latest")
+            new ClickHouseContainer("clickhouse/clickhouse-server:24.8")
                     .withNetwork(NETWORK)
                     .withNetworkAliases("clickhouse")
                     .withExposedPorts(8123, 9000)
@@ -80,7 +98,6 @@ public class FlinkContainerEnvironment {
     @Before
     public void setUp() throws Exception {
         CLICKHOUSE_CONTAINER.start();
-        Thread.sleep(30000);
 
         String properties =
                 String.join(
@@ -90,7 +107,7 @@ public class FlinkContainerEnvironment {
                                 "heartbeat.timeout: 60000",
                                 "parallelism.default: 1"));
         jobManager =
-                new GenericContainer<>(DockerImageName.parse("flink:2.1-scala_2.12"))
+                new GenericContainer<>(DockerImageName.parse("flink:2.1.0-scala_2.12-java17"))
                         .withCommand("jobmanager")
                         .withNetwork(NETWORK)
                         .withExtraHost("host.docker.internal", "host-gateway")
@@ -99,9 +116,13 @@ public class FlinkContainerEnvironment {
                         .dependsOn(CLICKHOUSE_CONTAINER)
                         .withLabel("com.testcontainers.allow-filesystem-access", "true")
                         .withEnv("FLINK_PROPERTIES", properties)
+                        .waitingFor(
+                                Wait.forHttp("/overview")
+                                        .forPort(8081)
+                                        .withStartupTimeout(Duration.ofMinutes(5)))
                         .withLogConsumer(new Slf4jLogConsumer(logger));
         taskManager =
-                new GenericContainer<>(DockerImageName.parse("flink:2.1-scala_2.12"))
+                new GenericContainer<>(DockerImageName.parse("flink:2.1.0-scala_2.12-java17"))
                         .withCommand("taskmanager")
                         .withExtraHost("host.docker.internal", "host-gateway")
                         .withNetwork(NETWORK)
@@ -112,8 +133,22 @@ public class FlinkContainerEnvironment {
                         .withLogConsumer(new Slf4jLogConsumer(logger));
         Startables.deepStart(Stream.of(jobManager)).join();
         Startables.deepStart(Stream.of(taskManager)).join();
-        Thread.sleep(5000);
         logger.info("Containers are started.");
+    }
+
+    @After
+    public void tearDownEnvironment() throws Exception {
+        if (restClusterClient != null) {
+            restClusterClient.close();
+            restClusterClient = null;
+        }
+        if (taskManager != null) {
+            taskManager.stop();
+        }
+        if (jobManager != null) {
+            jobManager.stop();
+        }
+        CLICKHOUSE_CONTAINER.stop();
     }
 
     /**
@@ -198,17 +233,18 @@ public class FlinkContainerEnvironment {
             if (jobStatusMessages != null && !jobStatusMessages.isEmpty()) {
                 JobStatusMessage message = jobStatusMessages.iterator().next();
                 JobStatus jobStatus = message.getJobState();
-                if (jobStatus.isTerminalState() && message.getJobState() == JobStatus.FAILED) {
+                if (jobStatus == JobStatus.RUNNING || jobStatus == JobStatus.FINISHED) {
+                    return;
+                } else if (jobStatus.isTerminalState()) {
                     throw new ValidationException(
                             String.format(
                                     "Job has been terminated! JobName: %s, JobID: %s, Status: %s",
                                     message.getJobName(),
                                     message.getJobId(),
                                     message.getJobState()));
-                } else if (jobStatus == JobStatus.RUNNING) {
-                    return;
                 }
             }
         }
+        throw new AssertionError("Flink job did not start within " + timeout);
     }
 }

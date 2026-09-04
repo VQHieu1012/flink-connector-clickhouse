@@ -23,6 +23,7 @@ import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConne
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseStatementWrapper;
 import org.apache.flink.connector.clickhouse.internal.converter.ClickHouseRowConverter;
 import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.table.data.RowData;
 
 import com.clickhouse.jdbc.ClickHouseConnection;
@@ -32,9 +33,10 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.ToLongFunction;
 
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.DISCARD;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
@@ -63,13 +65,21 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
 
     private final Function<RowData, RowData> keyExtractor;
 
+    private final Function<RowData, RowData> rowCopier;
+
+    private final ToLongFunction<RowData> rowSizeEstimator;
+
     private final int maxRetries;
 
     private final SinkUpdateStrategy updateStrategy;
 
     private final boolean ignoreDelete;
 
-    private final Map<RowData, RowData> reduceBuffer = new HashMap<>();
+    private final Map<RowData, RowData> reduceBuffer = new LinkedHashMap<>();
+
+    private final Map<RowData, Long> bufferedRecordSizes = new LinkedHashMap<>();
+
+    private long bufferedBytes;
 
     private transient ClickHouseStatementWrapper insertStatement;
 
@@ -78,6 +88,8 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     private transient ClickHouseStatementWrapper deleteStatement;
 
     private transient ClickHouseConnectionProvider connectionProvider;
+
+    private transient Counter retryCounter;
 
     public ClickHouseUpsertExecutor(
             String insertSql,
@@ -88,6 +100,8 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
             ClickHouseRowConverter deleteConverter,
             Function<RowData, RowData> updateExtractor,
             Function<RowData, RowData> keyExtractor,
+            Function<RowData, RowData> rowCopier,
+            ToLongFunction<RowData> rowSizeEstimator,
             ClickHouseDmlOptions options) {
         this.insertSql = insertSql;
         this.updateSql = updateSql;
@@ -97,6 +111,8 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
         this.deleteConverter = deleteConverter;
         this.updateExtractor = updateExtractor;
         this.keyExtractor = keyExtractor;
+        this.rowCopier = rowCopier;
+        this.rowSizeEstimator = rowSizeEstimator;
         this.maxRetries = options.getMaxRetries();
         this.updateStrategy = options.getUpdateStrategy();
         this.ignoreDelete = options.isIgnoreDelete();
@@ -126,13 +142,46 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     public void setRuntimeContext(RuntimeContext context) {}
 
     @Override
+    public void setRetryCounter(Counter retryCounter) {
+        this.retryCounter = retryCounter;
+    }
+
+    @Override
     public void addToBatch(RowData record) {
-        RowData key = keyExtractor.apply(record);
-        reduceBuffer.put(key, record);
+        // Flink may reuse RowData instances after write() returns. Retain an owned copy only.
+        RowData recordCopy = rowCopier.apply(record);
+        RowData key = keyExtractor.apply(recordCopy);
+        long recordSize = rowSizeEstimator.applyAsLong(recordCopy);
+        Long replacedSize = bufferedRecordSizes.put(key, recordSize);
+        if (replacedSize != null) {
+            bufferedBytes -= replacedSize;
+        }
+        bufferedBytes += recordSize;
+        reduceBuffer.put(key, recordCopy);
+    }
+
+    int getBufferedRecordCount() {
+        return reduceBuffer.size();
+    }
+
+    @Override
+    public long getBufferedBytes() {
+        return bufferedBytes;
     }
 
     @Override
     public void executeBatch() throws SQLException {
+        attemptExecuteBatch(
+                this::bindAndExecuteBatch,
+                maxRetries,
+                retryCounter,
+                this::reconnectAndPrepareStatements);
+        reduceBuffer.clear();
+        bufferedRecordSizes.clear();
+        bufferedBytes = 0L;
+    }
+
+    private void bindAndExecuteBatch() throws SQLException {
         for (RowData value : reduceBuffer.values()) {
             addValueToBatch(value);
         }
@@ -140,11 +189,17 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
         for (ClickHouseStatementWrapper clickHouseStatement :
                 Arrays.asList(insertStatement, updateStatement, deleteStatement)) {
             if (clickHouseStatement != null) {
-                attemptExecuteBatch(clickHouseStatement, maxRetries);
+                clickHouseStatement.executeBatch();
             }
         }
+    }
 
-        reduceBuffer.clear();
+    private void reconnectAndPrepareStatements() throws SQLException {
+        if (connectionProvider == null) {
+            throw new SQLException("Cannot reconnect a ClickHouse executor without a provider");
+        }
+        closeStatement();
+        prepareStatement(connectionProvider.reconnect());
     }
 
     private void addValueToBatch(RowData record) throws SQLException {
@@ -194,6 +249,9 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
                 }
             }
         }
+        insertStatement = null;
+        updateStatement = null;
+        deleteStatement = null;
     }
 
     @Override

@@ -33,6 +33,8 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
 
     private final int batchSize;
 
+    private final long maxBufferedBytes;
+
     private final Duration flushInterval;
 
     private final int maxRetries;
@@ -58,6 +60,7 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
             String databaseName,
             String tableName,
             int batchSize,
+            long maxBufferedBytes,
             Duration flushInterval,
             int maxRetires,
             boolean useLocal,
@@ -69,6 +72,7 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
             Integer parallelism) {
         super(url, username, password, databaseName, tableName);
         this.batchSize = batchSize;
+        this.maxBufferedBytes = maxBufferedBytes;
         this.flushInterval = flushInterval;
         this.maxRetries = maxRetires;
         this.useLocal = useLocal;
@@ -82,6 +86,10 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
 
     public int getBatchSize() {
         return this.batchSize;
+    }
+
+    public long getMaxBufferedBytes() {
+        return maxBufferedBytes;
     }
 
     public Duration getFlushInterval() {
@@ -128,6 +136,7 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
         private String databaseName;
         private String tableName;
         private int batchSize;
+        private long maxBufferedBytes = Long.MAX_VALUE;
         private Duration flushInterval;
         private int maxRetries;
         private boolean useLocal;
@@ -170,6 +179,11 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
             return this;
         }
 
+        public Builder withMaxBufferedBytes(long maxBufferedBytes) {
+            this.maxBufferedBytes = maxBufferedBytes;
+            return this;
+        }
+
         public Builder withFlushInterval(Duration flushInterval) {
             this.flushInterval = flushInterval;
             return this;
@@ -196,7 +210,10 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
         }
 
         public Builder withShardingKey(String shardingKey) {
-            this.shardingKey = Collections.singletonList(shardingKey);
+            this.shardingKey =
+                    shardingKey == null
+                            ? Collections.emptyList()
+                            : Collections.singletonList(shardingKey);
             return this;
         }
 
@@ -223,6 +240,7 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
                     databaseName,
                     tableName,
                     batchSize,
+                    maxBufferedBytes,
                     flushInterval,
                     maxRetries,
                     useLocal,

@@ -22,6 +22,7 @@ import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConne
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseStatementWrapper;
 import org.apache.flink.connector.clickhouse.internal.converter.ClickHouseRowConverter;
 import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.table.data.RowData;
 
 import com.clickhouse.jdbc.ClickHouseConnection;
@@ -30,6 +31,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Function;
+import java.util.function.ToLongFunction;
 
 /** ClickHouse's batch executor. */
 public class ClickHouseBatchExecutor implements ClickHouseExecutor {
@@ -42,16 +47,32 @@ public class ClickHouseBatchExecutor implements ClickHouseExecutor {
 
     private final ClickHouseRowConverter converter;
 
+    private final Function<RowData, RowData> rowCopier;
+
+    private final ToLongFunction<RowData> rowSizeEstimator;
+
     private final int maxRetries;
 
     private transient ClickHouseStatementWrapper statement;
 
     private transient ClickHouseConnectionProvider connectionProvider;
 
+    private transient Counter retryCounter;
+
+    private final List<RowData> batch = new ArrayList<>();
+
+    private long bufferedBytes;
+
     public ClickHouseBatchExecutor(
-            String insertSql, ClickHouseRowConverter converter, ClickHouseDmlOptions options) {
+            String insertSql,
+            ClickHouseRowConverter converter,
+            Function<RowData, RowData> rowCopier,
+            ToLongFunction<RowData> rowSizeEstimator,
+            ClickHouseDmlOptions options) {
         this.insertSql = insertSql;
         this.converter = converter;
+        this.rowCopier = rowCopier;
+        this.rowSizeEstimator = rowSizeEstimator;
         this.maxRetries = options.getMaxRetries();
     }
 
@@ -73,11 +94,17 @@ public class ClickHouseBatchExecutor implements ClickHouseExecutor {
     public void setRuntimeContext(RuntimeContext context) {}
 
     @Override
+    public void setRetryCounter(Counter retryCounter) {
+        this.retryCounter = retryCounter;
+    }
+
+    @Override
     public void addToBatch(RowData record) throws SQLException {
         switch (record.getRowKind()) {
             case INSERT:
-                converter.toExternal(record, statement);
-                statement.addBatch();
+                RowData ownedRecord = rowCopier.apply(record);
+                batch.add(ownedRecord);
+                bufferedBytes += rowSizeEstimator.applyAsLong(ownedRecord);
                 break;
             case UPDATE_AFTER:
             case DELETE:
@@ -93,7 +120,34 @@ public class ClickHouseBatchExecutor implements ClickHouseExecutor {
 
     @Override
     public void executeBatch() throws SQLException {
-        attemptExecuteBatch(statement, maxRetries);
+        attemptExecuteBatch(
+                this::bindAndExecuteBatch,
+                maxRetries,
+                retryCounter,
+                this::reconnectAndPrepareStatement);
+        batch.clear();
+        bufferedBytes = 0L;
+    }
+
+    @Override
+    public long getBufferedBytes() {
+        return bufferedBytes;
+    }
+
+    private void bindAndExecuteBatch() throws SQLException {
+        for (RowData record : batch) {
+            converter.toExternal(record, statement);
+            statement.addBatch();
+        }
+        statement.executeBatch();
+    }
+
+    private void reconnectAndPrepareStatement() throws SQLException {
+        if (connectionProvider == null) {
+            throw new SQLException("Cannot reconnect a ClickHouse executor without a provider");
+        }
+        closeStatement();
+        prepareStatement(connectionProvider.reconnect());
     }
 
     @Override

@@ -38,9 +38,15 @@ public class ClickHouseConfig {
 
     public static final String SINK_BATCH_SIZE = "sink.batch-size";
 
+    public static final String SINK_MAX_BUFFERED_BYTES = "sink.max-buffered-bytes";
+
     public static final String SINK_FLUSH_INTERVAL = "sink.flush-interval";
 
     public static final String SINK_MAX_RETRIES = "sink.max-retries";
+
+    public static final String SINK_CONNECTION_TIMEOUT = "sink.connection-timeout";
+
+    public static final String SINK_SOCKET_TIMEOUT = "sink.socket-timeout";
 
     public static final String SINK_UPDATE_STRATEGY = "sink.update-strategy";
 

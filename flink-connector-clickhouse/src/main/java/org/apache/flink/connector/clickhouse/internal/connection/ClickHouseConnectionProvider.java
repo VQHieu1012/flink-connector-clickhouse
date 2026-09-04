@@ -64,14 +64,33 @@ public class ClickHouseConnectionProvider implements Serializable {
     }
 
     public boolean isConnectionValid() throws SQLException {
-        return connection != null;
+        return connection != null && !connection.isClosed();
     }
 
     public synchronized ClickHouseConnection getOrCreateConnection() throws SQLException {
-        if (connection == null) {
+        if (!isConnectionValid()) {
             connection = createConnection(options.getUrl());
         }
         return connection;
+    }
+
+    public synchronized ClickHouseConnection reconnect() throws SQLException {
+        closeConnection();
+        return getOrCreateConnection();
+    }
+
+    public Map<Integer, ClickHouseConnectionProvider> createShardConnectionProviders(
+            ClusterSpec clusterSpec) {
+        Map<Integer, ClickHouseConnectionProvider> providers = new HashMap<>();
+        String urlSuffix = options.getUrlSuffix();
+        for (ShardSpec shardSpec : clusterSpec.getShards()) {
+            String shardUrl = shardSpec.getJdbcUrls() + urlSuffix;
+            providers.put(
+                    shardSpec.getNum(),
+                    new ClickHouseConnectionProvider(
+                            options.copyWithUrl(shardUrl), connectionProperties));
+        }
+        return providers;
     }
 
     public synchronized Map<Integer, ClickHouseConnection> createShardConnections(
@@ -131,15 +150,7 @@ public class ClickHouseConnectionProvider implements Serializable {
     }
 
     public void closeConnections() {
-        if (this.connection != null) {
-            try {
-                connection.close();
-            } catch (SQLException exception) {
-                LOG.warn("ClickHouse connection could not be closed.", exception);
-            } finally {
-                connection = null;
-            }
-        }
+        closeConnection();
 
         if (shardConnections != null) {
             for (ClickHouseConnection shardConnection : this.shardConnections) {
@@ -151,6 +162,18 @@ public class ClickHouseConnectionProvider implements Serializable {
             }
 
             shardConnections = null;
+        }
+    }
+
+    private void closeConnection() {
+        if (this.connection != null) {
+            try {
+                connection.close();
+            } catch (SQLException exception) {
+                LOG.warn("ClickHouse connection could not be closed.", exception);
+            } finally {
+                connection = null;
+            }
         }
     }
 }

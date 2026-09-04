@@ -41,3 +41,6 @@ buildNumber.properties
 
 # Mac OS
 .DS_Store
+graphify-out/
+.codex/hooks.json
+.vscode/settings.json

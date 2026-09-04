@@ -48,7 +48,7 @@ public class ClickHouseBatchOutputFormat extends AbstractClickHouseOutputFormat 
 
     private transient ClickHouseExecutor executor;
 
-    private transient int batchCount = 0;
+    private transient volatile int batchCount = 0;
 
     protected ClickHouseBatchOutputFormat(
             @Nonnull ClickHouseConnectionProvider connectionProvider,
@@ -79,6 +79,7 @@ public class ClickHouseBatchOutputFormat extends AbstractClickHouseOutputFormat 
                             partitionFields,
                             fieldTypes,
                             options);
+            executor.setRetryCounter(getNumRetriesCounter());
             executor.prepareStatement(connectionProvider);
 
             long flushIntervalMillis = options.getFlushInterval().toMillis();
@@ -101,7 +102,8 @@ public class ClickHouseBatchOutputFormat extends AbstractClickHouseOutputFormat 
         try {
             executor.addToBatch(record);
             batchCount++;
-            if (batchCount >= options.getBatchSize()) {
+            if (batchCount >= options.getBatchSize()
+                    || executor.getBufferedBytes() >= options.getMaxBufferedBytes()) {
                 flush();
             }
         } catch (SQLException exception) {
@@ -112,9 +114,19 @@ public class ClickHouseBatchOutputFormat extends AbstractClickHouseOutputFormat 
     @Override
     public synchronized void flush() throws IOException {
         if (batchCount > 0) {
-            checkBeforeFlush(executor);
+            checkBeforeFlush(executor, batchCount);
             batchCount = 0;
         }
+    }
+
+    @Override
+    protected long getBufferedRecordCount() {
+        return batchCount;
+    }
+
+    @Override
+    protected long getBufferedBytes() {
+        return executor == null ? 0L : executor.getBufferedBytes();
     }
 
     @Override

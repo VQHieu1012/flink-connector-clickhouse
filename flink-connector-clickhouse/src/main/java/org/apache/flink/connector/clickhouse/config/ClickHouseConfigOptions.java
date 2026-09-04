@@ -19,6 +19,7 @@ package org.apache.flink.connector.clickhouse.config;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.connector.clickhouse.internal.partitioner.BalancedPartitioner;
 import org.apache.flink.connector.clickhouse.internal.partitioner.ClickHousePartitioner;
 import org.apache.flink.connector.clickhouse.internal.partitioner.JavaHashPartitioner;
@@ -87,6 +88,13 @@ public class ClickHouseConfigOptions {
                     .withDescription(
                             "The max flush size, over this number of records, will flush data. The default value is 1000.");
 
+    public static final ConfigOption<MemorySize> SINK_MAX_BUFFERED_BYTES =
+            ConfigOptions.key(ClickHouseConfig.SINK_MAX_BUFFERED_BYTES)
+                    .memoryType()
+                    .defaultValue(MemorySize.ofMebiBytes(64L))
+                    .withDescription(
+                            "The estimated maximum serialized size of rows retained by each sink writer before flushing.");
+
     public static final ConfigOption<Duration> SINK_FLUSH_INTERVAL =
             ConfigOptions.key(ClickHouseConfig.SINK_FLUSH_INTERVAL)
                     .durationType()
@@ -99,6 +107,18 @@ public class ClickHouseConfigOptions {
                     .intType()
                     .defaultValue(3)
                     .withDescription("The max retry times if writing records to database failed.");
+
+    public static final ConfigOption<Duration> SINK_CONNECTION_TIMEOUT =
+            ConfigOptions.key(ClickHouseConfig.SINK_CONNECTION_TIMEOUT)
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(10L))
+                    .withDescription("The timeout for establishing a ClickHouse sink connection.");
+
+    public static final ConfigOption<Duration> SINK_SOCKET_TIMEOUT =
+            ConfigOptions.key(ClickHouseConfig.SINK_SOCKET_TIMEOUT)
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(5L))
+                    .withDescription("The socket timeout for ClickHouse sink requests.");
 
     public static final ConfigOption<SinkUpdateStrategy> SINK_UPDATE_STRATEGY =
             ConfigOptions.key(ClickHouseConfig.SINK_UPDATE_STRATEGY)

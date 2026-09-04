@@ -1,3 +1,20 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.flink.connector.clickhouse;
 
 import com.clickhouse.jdbc.ClickHouseConnection;
@@ -17,7 +34,7 @@ import java.util.List;
 import java.util.Properties;
 
 /** A proxy for Clickhouse to execute SQLs and check results. */
-public class ClickhouseProxy {
+public class ClickhouseProxy implements AutoCloseable {
 
     private final String jdbcUrl;
     private final String username;
@@ -35,7 +52,7 @@ public class ClickhouseProxy {
 
     public void connect() {
         try {
-            if (connection == null) {
+            if (connection == null || connection.isClosed()) {
                 Properties properties = new Properties();
                 properties.put("username", username);
                 properties.put("password", password);
@@ -60,38 +77,40 @@ public class ClickhouseProxy {
             throws Exception {
         connect();
         List<String> results = new ArrayList<>();
-        ResultSet resultSet = statement.executeQuery("select * from " + table);
-        while (resultSet.next()) {
-            List<String> result = new ArrayList<>();
-            ResultSetMetaData metaData = resultSet.getMetaData();
-            int columnCount = metaData.getColumnCount();
-            for (int i = 1; i <= columnCount; i++) {
-                String columnName = metaData.getColumnName(i);
-                if (!fields.contains(columnName)) {
-                    continue;
+        try (ResultSet resultSet = statement.executeQuery("select * from " + table)) {
+            while (resultSet.next()) {
+                List<String> result = new ArrayList<>();
+                ResultSetMetaData metaData = resultSet.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                for (int i = 1; i <= columnCount; i++) {
+                    String columnName = metaData.getColumnName(i);
+                    if (!fields.contains(columnName)) {
+                        continue;
+                    }
+                    String columnType = metaData.getColumnTypeName(i);
+                    switch (columnType) {
+                        case "Array":
+                            Array array = resultSet.getArray(i);
+                            result.add(array.toString());
+                            break;
+                        case "Timestamp":
+                            Timestamp timestamp = resultSet.getTimestamp(i);
+                            result.add(timestamp.toString());
+                            break;
+                        default:
+                            String value = resultSet.getString(i);
+                            result.add(value);
+                            break;
+                    }
                 }
-                String columnType = metaData.getColumnTypeName(i);
-                switch (columnType) {
-                    case "Array":
-                        Array array = resultSet.getArray(i);
-                        result.add(array.toString());
-                        break;
-                    case "Timestamp":
-                        Timestamp timestamp = resultSet.getTimestamp(i);
-                        result.add(timestamp.toString());
-                        break;
-                    default:
-                        String value = resultSet.getString(i);
-                        result.add(value);
-                        break;
-                }
-            }
 
-            results.add(String.join(",", result));
+                results.add(String.join(",", result));
+            }
         }
         Collections.sort(results);
-        Collections.sort(expectedResult);
-        Assert.assertArrayEquals(expectedResult.toArray(), results.toArray());
+        List<String> sortedExpected = new ArrayList<>(expectedResult);
+        Collections.sort(sortedExpected);
+        Assert.assertArrayEquals(sortedExpected.toArray(), results.toArray());
     }
 
     public void checkResultWithTimeout(
@@ -110,6 +129,24 @@ public class ClickhouseProxy {
         }
         if (!result) {
             checkResult(expectedResult, table, fields);
+        }
+    }
+
+    @Override
+    public void close() {
+        if (statement != null) {
+            try {
+                statement.close();
+            } catch (SQLException ignored) {
+                // Best-effort cleanup in test code.
+            }
+        }
+        if (connection != null) {
+            try {
+                connection.close();
+            } catch (SQLException ignored) {
+                // Best-effort cleanup in test code.
+            }
         }
     }
 }

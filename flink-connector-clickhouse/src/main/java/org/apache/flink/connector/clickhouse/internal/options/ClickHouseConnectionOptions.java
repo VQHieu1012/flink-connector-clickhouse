@@ -102,4 +102,8 @@ public class ClickHouseConnectionOptions implements Serializable {
     public String getTableName() {
         return this.tableName;
     }
+
+    public ClickHouseConnectionOptions copyWithUrl(String newUrl) {
+        return new ClickHouseConnectionOptions(newUrl, username, password, databaseName, tableName);
+    }
 }

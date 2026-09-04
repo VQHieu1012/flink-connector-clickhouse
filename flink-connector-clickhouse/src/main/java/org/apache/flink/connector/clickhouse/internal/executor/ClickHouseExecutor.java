@@ -23,10 +23,13 @@ import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConne
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseStatementWrapper;
 import org.apache.flink.connector.clickhouse.internal.converter.ClickHouseRowConverter;
 import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
 
 import com.clickhouse.jdbc.ClickHouseConnection;
 import org.apache.commons.lang3.ArrayUtils;
@@ -35,7 +38,10 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
 import java.sql.SQLException;
+import java.sql.SQLRecoverableException;
+import java.sql.SQLTransientException;
 import java.util.Arrays;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -52,20 +58,42 @@ public interface ClickHouseExecutor extends Serializable {
 
     void setRuntimeContext(RuntimeContext context);
 
+    void setRetryCounter(Counter retryCounter);
+
     void addToBatch(RowData rowData) throws SQLException;
 
     void executeBatch() throws SQLException;
 
+    long getBufferedBytes();
+
     void closeStatement();
 
-    default void attemptExecuteBatch(ClickHouseStatementWrapper stmt, int maxRetries)
+    default void attemptExecuteBatch(
+            ClickHouseStatementWrapper stmt, int maxRetries, Counter retryCounter)
+            throws SQLException {
+        attemptExecuteBatch(stmt::executeBatch, maxRetries, retryCounter, () -> {});
+    }
+
+    default void attemptExecuteBatch(
+            SqlBatchOperation operation,
+            int maxRetries,
+            Counter retryCounter,
+            SqlBatchOperation beforeRetry)
             throws SQLException {
         for (int i = 0; i <= maxRetries; i++) {
             try {
-                stmt.executeBatch();
+                operation.execute();
                 return;
-            } catch (Exception exception) {
-                LOG.error("ClickHouse executeBatch error, retry times = {}", i, exception);
+            } catch (SQLException exception) {
+                LOG.warn(
+                        "ClickHouse executeBatch failed on attempt {} of {}",
+                        i + 1,
+                        maxRetries + 1,
+                        exception);
+                if (!isRetryable(exception)) {
+                    throw new SQLException(
+                            "ClickHouse batch failed with a non-retryable JDBC error", exception);
+                }
                 if (i >= maxRetries) {
                     throw new SQLException(
                             String.format(
@@ -73,15 +101,54 @@ public interface ClickHouseExecutor extends Serializable {
                                     maxRetries),
                             exception);
                 }
+                if (retryCounter != null) {
+                    retryCounter.inc();
+                }
                 try {
-                    Thread.sleep(1000L * i);
+                    Thread.sleep(retryDelayMillis(i + 1));
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                     throw new SQLException(
                             "Unable to flush; interrupted while doing another attempt", ex);
                 }
+                beforeRetry.execute();
             }
         }
+    }
+
+    /** A JDBC batch operation that may fail with a checked SQL exception. */
+    @FunctionalInterface
+    interface SqlBatchOperation {
+        void execute() throws SQLException;
+    }
+
+    static long retryDelayMillis(int retryNumber) {
+        long baseDelay = retryBaseDelayMillis(retryNumber);
+        long jitter = Math.max(1L, baseDelay / 5L);
+        return Math.min(
+                30_000L,
+                ThreadLocalRandom.current().nextLong(baseDelay - jitter, baseDelay + jitter + 1L));
+    }
+
+    static long retryBaseDelayMillis(int retryNumber) {
+        int exponent = Math.min(Math.max(retryNumber - 1, 0), 5);
+        return Math.min(1000L << exponent, 30_000L);
+    }
+
+    static boolean isRetryable(SQLException exception) {
+        for (SQLException current = exception;
+                current != null;
+                current = current.getNextException()) {
+            if (current instanceof SQLTransientException
+                    || current instanceof SQLRecoverableException) {
+                return true;
+            }
+            String sqlState = current.getSQLState();
+            if (sqlState != null && (sqlState.startsWith("08") || sqlState.startsWith("40"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static ClickHouseExecutor createClickHouseExecutor(
@@ -117,8 +184,15 @@ public interface ClickHouseExecutor extends Serializable {
         String insertSql =
                 ClickHouseStatementFactory.getInsertIntoStatement(
                         tableName, databaseName, fieldNames);
-        ClickHouseRowConverter converter = new ClickHouseRowConverter(RowType.of(fieldTypes));
-        return new ClickHouseBatchExecutor(insertSql, converter, options);
+        RowType rowType = RowType.of(fieldTypes);
+        ClickHouseRowConverter converter = new ClickHouseRowConverter(rowType);
+        RowDataSerializer rowSerializer = new RowDataSerializer(rowType);
+        return new ClickHouseBatchExecutor(
+                insertSql,
+                converter,
+                rowSerializer::copy,
+                row -> rowSerializer.toBinaryRow(row).getSizeInBytes(),
+                options);
     }
 
     static ClickHouseUpsertExecutor createUpsertExecutor(
@@ -161,6 +235,7 @@ public interface ClickHouseExecutor extends Serializable {
                 Arrays.stream(keyFields).mapToObj(f -> fieldTypes[f]).toArray(LogicalType[]::new);
         LogicalType[] updTypes =
                 Arrays.stream(updFields).mapToObj(f -> fieldTypes[f]).toArray(LogicalType[]::new);
+        RowDataSerializer rowSerializer = new RowDataSerializer(RowType.of(fieldTypes));
 
         return new ClickHouseUpsertExecutor(
                 insertSql,
@@ -170,18 +245,32 @@ public interface ClickHouseExecutor extends Serializable {
                 new ClickHouseRowConverter(RowType.of(updTypes)),
                 new ClickHouseRowConverter(RowType.of(keyTypes)),
                 createExtractor(fieldTypes, updFields),
-                createExtractor(fieldTypes, keyFields),
+                createKeyExtractor(fieldTypes, keyFields),
+                rowSerializer::copy,
+                row -> rowSerializer.toBinaryRow(row).getSizeInBytes(),
                 options);
     }
 
     static Function<RowData, RowData> createExtractor(LogicalType[] logicalTypes, int[] fields) {
+        return createExtractor(logicalTypes, fields, true);
+    }
+
+    static Function<RowData, RowData> createKeyExtractor(LogicalType[] logicalTypes, int[] fields) {
+        return createExtractor(logicalTypes, fields, false);
+    }
+
+    static Function<RowData, RowData> createExtractor(
+            LogicalType[] logicalTypes, int[] fields, boolean preserveRowKind) {
         final RowData.FieldGetter[] fieldGetters = new RowData.FieldGetter[fields.length];
         for (int i = 0; i < fields.length; i++) {
             fieldGetters[i] = createFieldGetter(logicalTypes[fields[i]], fields[i]);
         }
 
         return row -> {
-            GenericRowData rowData = new GenericRowData(row.getRowKind(), fieldGetters.length);
+            GenericRowData rowData =
+                    new GenericRowData(
+                            preserveRowKind ? row.getRowKind() : RowKind.INSERT,
+                            fieldGetters.length);
             for (int i = 0; i < fieldGetters.length; i++) {
                 rowData.setField(i, fieldGetters[i].getFieldOrNull(row));
             }

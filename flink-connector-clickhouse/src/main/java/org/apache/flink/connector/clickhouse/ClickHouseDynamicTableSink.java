@@ -100,7 +100,7 @@ public class ClickHouseDynamicTableSink implements DynamicTableSink, SupportsPar
                         .withPartitionKey(partitionKeys)
                         .build();
 
-        return SinkV2Provider.of(new ClickHouseRowDataSink(outputFormat));
+        return SinkV2Provider.of(new ClickHouseRowDataSink(outputFormat), options.getParallelism());
     }
 
     @Override

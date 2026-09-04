@@ -34,6 +34,8 @@ import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.FactoryUtil.TableFactoryHelper;
 
+import com.clickhouse.client.config.ClickHouseClientOption;
+
 import javax.annotation.Nullable;
 
 import java.util.HashSet;
@@ -50,13 +52,16 @@ import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptio
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SCAN_PARTITION_NUM;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SCAN_PARTITION_UPPER_BOUND;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_BATCH_SIZE;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CONNECTION_TIMEOUT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_FLUSH_INTERVAL;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_IGNORE_DELETE;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_MAX_BUFFERED_BYTES;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_MAX_RETRIES;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_PARALLELISM;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_PARTITION_KEY;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_PARTITION_STRATEGY;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_SHARDING_USE_TABLE_DEF;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_SOCKET_TIMEOUT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_UPDATE_STRATEGY;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.TABLE_NAME;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.URL;
@@ -86,7 +91,7 @@ public class ClickHouseDynamicTableFactory
                         .map(keys -> keys.toArray(new String[0]))
                         .orElse(new String[0]);
         Properties clickHouseProperties =
-                getClickHouseProperties(context.getCatalogTable().getOptions());
+                getSinkConnectionProperties(config, context.getCatalogTable().getOptions());
         return new ClickHouseDynamicTableSink(
                 getDmlOptions(config),
                 clickHouseProperties,
@@ -133,8 +138,11 @@ public class ClickHouseDynamicTableFactory
         optionalOptions.add(DATABASE_NAME);
         optionalOptions.add(USE_LOCAL);
         optionalOptions.add(SINK_BATCH_SIZE);
+        optionalOptions.add(SINK_MAX_BUFFERED_BYTES);
         optionalOptions.add(SINK_FLUSH_INTERVAL);
         optionalOptions.add(SINK_MAX_RETRIES);
+        optionalOptions.add(SINK_CONNECTION_TIMEOUT);
+        optionalOptions.add(SINK_SOCKET_TIMEOUT);
         optionalOptions.add(SINK_UPDATE_STRATEGY);
         optionalOptions.add(SINK_PARTITION_STRATEGY);
         optionalOptions.add(SINK_PARTITION_KEY);
@@ -155,7 +163,42 @@ public class ClickHouseDynamicTableFactory
         return optionalOptions;
     }
 
-    private void validateConfigOptions(ReadableConfig config) {
+    void validateConfigOptions(ReadableConfig config) {
+        if (config.get(SINK_BATCH_SIZE) <= 0) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The value of '%s' must be greater than zero.", SINK_BATCH_SIZE.key()));
+        }
+        if (config.get(SINK_MAX_BUFFERED_BYTES).getBytes() <= 0L) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The value of '%s' must be greater than zero.",
+                            SINK_MAX_BUFFERED_BYTES.key()));
+        }
+        if (config.get(SINK_FLUSH_INTERVAL).isZero()
+                || config.get(SINK_FLUSH_INTERVAL).isNegative()) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The value of '%s' must be greater than zero.",
+                            SINK_FLUSH_INTERVAL.key()));
+        }
+        if (config.get(SINK_MAX_RETRIES) < 0) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The value of '%s' must not be negative.", SINK_MAX_RETRIES.key()));
+        }
+        validatePositiveDuration(config, SINK_CONNECTION_TIMEOUT);
+        validatePositiveDuration(config, SINK_SOCKET_TIMEOUT);
+        config.getOptional(SINK_PARALLELISM)
+                .filter(parallelism -> parallelism <= 0)
+                .ifPresent(
+                        parallelism -> {
+                            throw new IllegalArgumentException(
+                                    String.format(
+                                            "The value of '%s' must be greater than zero.",
+                                            SINK_PARALLELISM.key()));
+                        });
+
         // check sharding strategy and sharding key.
         SinkShardingStrategy shardingStrategy = config.get(SINK_PARTITION_STRATEGY);
         if (!config.get(SINK_SHARDING_USE_TABLE_DEF)
@@ -205,6 +248,26 @@ public class ClickHouseDynamicTableFactory
         }
     }
 
+    private void validatePositiveDuration(
+            ReadableConfig config, ConfigOption<java.time.Duration> option) {
+        if (config.get(option).isZero() || config.get(option).isNegative()) {
+            throw new IllegalArgumentException(
+                    String.format("The value of '%s' must be greater than zero.", option.key()));
+        }
+    }
+
+    Properties getSinkConnectionProperties(
+            ReadableConfig config, java.util.Map<String, String> tableOptions) {
+        Properties properties = getClickHouseProperties(tableOptions);
+        properties.putIfAbsent(
+                ClickHouseClientOption.CONNECTION_TIMEOUT.getKey(),
+                Long.toString(config.get(SINK_CONNECTION_TIMEOUT).toMillis()));
+        properties.putIfAbsent(
+                ClickHouseClientOption.SOCKET_TIMEOUT.getKey(),
+                Long.toString(config.get(SINK_SOCKET_TIMEOUT).toMillis()));
+        return properties;
+    }
+
     private ClickHouseDmlOptions getDmlOptions(ReadableConfig config) {
         return new ClickHouseDmlOptions.Builder()
                 .withUrl(config.get(URL))
@@ -213,6 +276,7 @@ public class ClickHouseDynamicTableFactory
                 .withDatabaseName(config.get(DATABASE_NAME))
                 .withTableName(config.get(TABLE_NAME))
                 .withBatchSize(config.get(SINK_BATCH_SIZE))
+                .withMaxBufferedBytes(config.get(SINK_MAX_BUFFERED_BYTES).getBytes())
                 .withFlushInterval(config.get(SINK_FLUSH_INTERVAL))
                 .withMaxRetries(config.get(SINK_MAX_RETRIES))
                 .withUseLocal(config.get(USE_LOCAL))

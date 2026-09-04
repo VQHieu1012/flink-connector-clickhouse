@@ -21,9 +21,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
-import org.apache.flink.runtime.state.FunctionInitializationContext;
-import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.Preconditions;
 
@@ -33,7 +30,7 @@ import java.io.IOException;
 
 /** A rich sink function to write {@link RowData} records into ClickHouse. */
 @Internal
-public class ClickHouseRowDataSink implements Sink<RowData>, CheckpointedFunction {
+public class ClickHouseRowDataSink implements Sink<RowData> {
 
     private final AbstractClickHouseOutputFormat outputFormat;
 
@@ -45,14 +42,6 @@ public class ClickHouseRowDataSink implements Sink<RowData>, CheckpointedFunctio
     public SinkWriter<RowData> createWriter(WriterInitContext initContext) throws IOException {
         return new ClickHouseRowDataSinkWriter(initContext, outputFormat);
     }
-
-    @Override
-    public void initializeState(FunctionInitializationContext context) {}
-
-    @Override
-    public void snapshotState(FunctionSnapshotContext context) throws Exception {
-        outputFormat.flush();
-    }
 }
 
 class ClickHouseRowDataSinkWriter implements SinkWriter<RowData> {
@@ -62,6 +51,7 @@ class ClickHouseRowDataSinkWriter implements SinkWriter<RowData> {
             WriterInitContext context, AbstractClickHouseOutputFormat outputFormat)
             throws IOException {
         this.outputFormat = outputFormat;
+        this.outputFormat.initializeMetrics(context.metricGroup());
         this.outputFormat.open();
     }
 

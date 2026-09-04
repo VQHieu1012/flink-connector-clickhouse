@@ -27,8 +27,6 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.util.Preconditions;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
-
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
@@ -63,6 +61,8 @@ public class ClickHouseShardOutputFormat extends AbstractClickHouseOutputFormat 
 
     private final Map<Integer, AtomicInteger> batchCountMap;
 
+    private final Map<Integer, ClickHouseConnectionProvider> shardConnectionProviderMap;
+
     protected ClickHouseShardOutputFormat(
             @Nonnull ClickHouseConnectionProvider connectionProvider,
             @Nonnull ClusterSpec clusterSpec,
@@ -84,15 +84,16 @@ public class ClickHouseShardOutputFormat extends AbstractClickHouseOutputFormat 
         this.options = Preconditions.checkNotNull(options);
         this.shardExecutorMap = new HashMap<>();
         this.batchCountMap = new HashMap<>();
+        this.shardConnectionProviderMap = new HashMap<>();
     }
 
     @Override
     public void open() throws IOException {
         try {
-            Map<Integer, ClickHouseConnection> connectionMap =
-                    connectionProvider.createShardConnections(clusterSpec);
-            for (Map.Entry<Integer, ClickHouseConnection> connectionEntry :
-                    connectionMap.entrySet()) {
+            Map<Integer, ClickHouseConnectionProvider> providerMap =
+                    connectionProvider.createShardConnectionProviders(clusterSpec);
+            for (Map.Entry<Integer, ClickHouseConnectionProvider> providerEntry :
+                    providerMap.entrySet()) {
                 ClickHouseExecutor executor =
                         ClickHouseExecutor.createClickHouseExecutor(
                                 shardTableSchema.getTable(),
@@ -103,8 +104,10 @@ public class ClickHouseShardOutputFormat extends AbstractClickHouseOutputFormat 
                                 partitionFields,
                                 logicalTypes,
                                 options);
-                executor.prepareStatement(connectionEntry.getValue());
-                shardExecutorMap.put(connectionEntry.getKey(), executor);
+                executor.setRetryCounter(getNumRetriesCounter());
+                executor.prepareStatement(providerEntry.getValue());
+                shardExecutorMap.put(providerEntry.getKey(), executor);
+                shardConnectionProviderMap.put(providerEntry.getKey(), providerEntry.getValue());
             }
 
             long flushIntervalMillis = options.getFlushInterval().toMillis();
@@ -148,7 +151,9 @@ public class ClickHouseShardOutputFormat extends AbstractClickHouseOutputFormat 
                     batchCountMap
                             .computeIfAbsent(shardNum, integer -> new AtomicInteger(0))
                             .incrementAndGet();
-            if (batchCount >= options.getBatchSize()) {
+            if (batchCount >= options.getBatchSize()
+                    || shardExecutorMap.get(shardNum).getBufferedBytes()
+                            >= options.getMaxBufferedBytes()) {
                 flush(shardNum);
             }
         } catch (Exception exception) {
@@ -166,15 +171,30 @@ public class ClickHouseShardOutputFormat extends AbstractClickHouseOutputFormat 
     private synchronized void flush(int shardNum) throws IOException {
         AtomicInteger batchCount = batchCountMap.get(shardNum);
         if (batchCount != null && batchCount.intValue() > 0) {
-            checkBeforeFlush(shardExecutorMap.get(shardNum));
+            checkBeforeFlush(shardExecutorMap.get(shardNum), batchCount.longValue());
             batchCount.set(0);
         }
+    }
+
+    @Override
+    protected synchronized long getBufferedRecordCount() {
+        return batchCountMap.values().stream().mapToLong(AtomicInteger::longValue).sum();
+    }
+
+    @Override
+    protected synchronized long getBufferedBytes() {
+        return shardExecutorMap.values().stream()
+                .mapToLong(ClickHouseExecutor::getBufferedBytes)
+                .sum();
     }
 
     @Override
     public synchronized void closeOutputFormat() {
         for (ClickHouseExecutor shardExecutor : shardExecutorMap.values()) {
             shardExecutor.closeStatement();
+        }
+        for (ClickHouseConnectionProvider shardProvider : shardConnectionProviderMap.values()) {
+            shardProvider.closeConnections();
         }
         connectionProvider.closeConnections();
     }
