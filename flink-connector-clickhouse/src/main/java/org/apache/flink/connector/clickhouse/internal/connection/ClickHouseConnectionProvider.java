@@ -22,12 +22,12 @@ import org.apache.flink.connector.clickhouse.internal.schema.ClusterSpec;
 import org.apache.flink.connector.clickhouse.internal.schema.ShardSpec;
 
 import com.clickhouse.client.config.ClickHouseDefaults;
-import com.clickhouse.jdbc.ClickHouseConnection;
 import com.clickhouse.jdbc.ClickHouseDriver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -49,9 +49,9 @@ public class ClickHouseConnectionProvider implements Serializable {
 
     private final Properties connectionProperties;
 
-    private transient ClickHouseConnection connection;
+    private transient Connection connection;
 
-    private transient List<ClickHouseConnection> shardConnections;
+    private transient List<Connection> shardConnections;
 
     public ClickHouseConnectionProvider(ClickHouseConnectionOptions options) {
         this(options, new Properties());
@@ -67,14 +67,14 @@ public class ClickHouseConnectionProvider implements Serializable {
         return connection != null && !connection.isClosed();
     }
 
-    public synchronized ClickHouseConnection getOrCreateConnection() throws SQLException {
+    public synchronized Connection getOrCreateConnection() throws SQLException {
         if (!isConnectionValid()) {
             connection = createConnection(options.getUrl());
         }
         return connection;
     }
 
-    public synchronized ClickHouseConnection reconnect() throws SQLException {
+    public synchronized Connection reconnect() throws SQLException {
         closeConnection();
         return getOrCreateConnection();
     }
@@ -93,33 +93,32 @@ public class ClickHouseConnectionProvider implements Serializable {
         return providers;
     }
 
-    public synchronized Map<Integer, ClickHouseConnection> createShardConnections(
-            ClusterSpec clusterSpec) throws SQLException {
-        Map<Integer, ClickHouseConnection> connectionMap = new HashMap<>();
+    public synchronized Map<Integer, Connection> createShardConnections(ClusterSpec clusterSpec)
+            throws SQLException {
+        Map<Integer, Connection> connectionMap = new HashMap<>();
         String urlSuffix = options.getUrlSuffix();
         for (ShardSpec shardSpec : clusterSpec.getShards()) {
             String shardUrl = shardSpec.getJdbcUrls() + urlSuffix;
-            ClickHouseConnection connection = createAndStoreShardConnection(shardUrl);
+            Connection connection = createAndStoreShardConnection(shardUrl);
             connectionMap.put(shardSpec.getNum(), connection);
         }
 
         return connectionMap;
     }
 
-    public synchronized ClickHouseConnection createAndStoreShardConnection(String url)
-            throws SQLException {
+    public synchronized Connection createAndStoreShardConnection(String url) throws SQLException {
         if (shardConnections == null) {
             shardConnections = new ArrayList<>();
         }
 
-        ClickHouseConnection connection = createConnection(url);
+        Connection connection = createConnection(url);
         shardConnections.add(connection);
         return connection;
     }
 
     public List<String> getShardUrls(String remoteCluster) throws SQLException {
         Map<Integer, String> shardsMap = new HashMap<>();
-        ClickHouseConnection conn = getOrCreateConnection();
+        Connection conn = getOrCreateConnection();
         ClusterSpec clusterSpec = getClusterSpec(conn, remoteCluster);
         String urlSuffix = options.getUrlSuffix();
         for (ShardSpec shardSpec : clusterSpec.getShards()) {
@@ -133,7 +132,7 @@ public class ClickHouseConnectionProvider implements Serializable {
                 .collect(toList());
     }
 
-    private ClickHouseConnection createConnection(String url) throws SQLException {
+    private Connection createConnection(String url) throws SQLException {
         LOG.info("connecting to {}", url);
         Properties configuration = new Properties();
         configuration.putAll(connectionProperties);
@@ -153,7 +152,7 @@ public class ClickHouseConnectionProvider implements Serializable {
         closeConnection();
 
         if (shardConnections != null) {
-            for (ClickHouseConnection shardConnection : this.shardConnections) {
+            for (Connection shardConnection : this.shardConnections) {
                 try {
                     shardConnection.close();
                 } catch (SQLException exception) {

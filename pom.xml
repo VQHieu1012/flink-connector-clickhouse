@@ -60,7 +60,7 @@ limitations under the License.
 		<junit.version>4.13.2</junit.version>
 		<junit5.version>5.11.4</junit5.version>
 		<mockito.version>5.14.2</mockito.version>
-		<clickhouse-jdbc.version>0.6.4</clickhouse-jdbc.version>
+		<clickhouse-jdbc.version>0.9.8</clickhouse-jdbc.version>
 		<scala.binary.version>2.12</scala.binary.version>
 		<flink.version>2.1.0</flink.version>
 		<commons-lang3.version>3.18.0</commons-lang3.version>

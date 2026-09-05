@@ -27,11 +27,11 @@ import org.apache.flink.connector.clickhouse.internal.schema.DistributedEngineFu
 import org.apache.flink.core.io.InputSplit;
 import org.apache.flink.table.data.RowData;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -108,8 +108,7 @@ public class ClickHouseShardInputFormat extends AbstractClickHouseInputFormat {
             for (int i = 0; i < shardIds.length; i++) {
                 // PreparedStatement.
                 String shardUrl = shardMap.get((Integer) shardIds[i]);
-                ClickHouseConnection connection =
-                        connectionProvider.createAndStoreShardConnection(shardUrl);
+                Connection connection = connectionProvider.createAndStoreShardConnection(shardUrl);
                 String query =
                         getQuery(engineFullSchema.getTable(), engineFullSchema.getDatabase());
                 PreparedStatement statement = connection.prepareStatement(query);

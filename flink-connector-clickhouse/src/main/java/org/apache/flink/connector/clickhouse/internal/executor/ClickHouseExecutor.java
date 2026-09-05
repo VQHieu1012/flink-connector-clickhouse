@@ -31,12 +31,12 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
 import org.apache.commons.lang3.ArrayUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLRecoverableException;
 import java.sql.SQLTransientException;
@@ -52,7 +52,7 @@ public interface ClickHouseExecutor extends Serializable {
 
     Logger LOG = LoggerFactory.getLogger(ClickHouseExecutor.class);
 
-    void prepareStatement(ClickHouseConnection connection) throws SQLException;
+    void prepareStatement(Connection connection) throws SQLException;
 
     void prepareStatement(ClickHouseConnectionProvider connectionProvider) throws SQLException;
 

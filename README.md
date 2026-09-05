@@ -4,13 +4,33 @@
 for [ClickHouse](https://github.com/yandex/ClickHouse) database, this project Powered
 by [ClickHouse JDBC](https://github.com/ClickHouse/clickhouse-jdbc).
 
-Currently, the project supports `Source/Sink Table` and `Flink Catalog`.  
-Please create issues if you encounter bugs and any help for the project is greatly appreciated.
+The production-supported scope of this build is the Flink SQL sink. Source, lookup, and catalog
+classes remain for compatibility with the original project but are not covered by the production
+release contract or compatibility matrix.
 
 The sink currently provides at-least-once delivery. A checkpoint flushes pending JDBC batches,
 but a batch can be replayed when ClickHouse accepts it before the corresponding checkpoint
 completes. See the [production-readiness plan](docs/production-readiness.md) for guarantees,
 remaining work, and release gates.
+
+For append workloads, retry deduplication is a ClickHouse table concern rather than an exactly-once
+guarantee from this connector. Replicated MergeTree-family tables can deduplicate identical recent
+insert blocks, while non-replicated MergeTree tables require a non-zero
+`non_replicated_deduplication_window`. This mechanism is bounded by the configured window and only
+works when a retry reconstructs the same block with the same rows and order. Parallel writers,
+different batch boundaries, or an expired window can therefore still produce duplicates.
+
+Do not configure `properties.insert_deduplication_token`: table options are static, so the token
+would be reused by independent batches and could silently discard valid data. The factory rejects
+this option until tokens can be generated per batch and restored consistently with checkpoints.
+When using `properties.async_insert = 1`, `properties.wait_for_async_insert` must remain enabled so
+an acknowledgement means the buffered insert was flushed; the unsafe fire-and-forget combination
+is rejected.
+
+`ReplacingMergeTree` is an alternative for versioned append/CDC designs, but replacement happens
+during asynchronous merges. Queries that require an immediately reconciled current-state view must
+use an appropriate `FINAL` strategy and account for its read cost. A ClickHouse `PRIMARY KEY` is a
+sparse index and does not enforce row uniqueness.
 
 The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `numBytesSend`, and
 `currentSendTime` metrics. Under the `clickhouse` metric group it also exposes `batchesSent`,
@@ -70,11 +90,17 @@ The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `num
 |:-----------------|:-----------------|
 | Flink            | 2.1.0            |
 | Java             | 17               |
-| ClickHouse       | 24.8             |
-| clickhouse-jdbc  | 0.6.4            |
+| ClickHouse       | 24.8, 26.3       |
+| clickhouse-jdbc  | 0.9.8            |
 
 This matrix records the containerized combination exercised by this repository; other versions
 are not implied to be incompatible, but must pass the same unit and E2E suites before release.
+
+With clickhouse-jdbc 0.9.x, unknown `properties.*` entries are treated as ClickHouse server
+settings and normalized to the driver's `clickhouse_setting_` prefix. JDBC client properties such
+as `properties.connection_timeout`, `properties.socket_timeout`, `properties.compress`, and
+`properties.decompress` are passed through unchanged. Already-prefixed server settings are also
+accepted.
 
 **breaking**
 

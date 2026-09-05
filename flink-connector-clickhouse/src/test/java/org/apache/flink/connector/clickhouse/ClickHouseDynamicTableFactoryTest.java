@@ -21,7 +21,6 @@ package org.apache.flink.connector.clickhouse;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
 
-import com.clickhouse.client.config.ClickHouseClientOption;
 import org.junit.Test;
 
 import java.time.Duration;
@@ -107,12 +106,43 @@ public class ClickHouseDynamicTableFactoryTest {
         config.set(SINK_SOCKET_TIMEOUT, Duration.ofSeconds(30));
         Map<String, String> tableOptions = new HashMap<>();
         tableOptions.put("properties.socket_timeout", "1234");
+        tableOptions.put("properties.mutations_sync", "2");
 
         Properties properties = factory.getSinkConnectionProperties(config, tableOptions);
 
-        assertEquals(
-                "2000", properties.getProperty(ClickHouseClientOption.CONNECTION_TIMEOUT.getKey()));
-        assertEquals(
-                "1234", properties.getProperty(ClickHouseClientOption.SOCKET_TIMEOUT.getKey()));
+        assertEquals("2000", properties.getProperty("connection_timeout"));
+        assertEquals("1234", properties.getProperty("socket_timeout"));
+        assertEquals("2", properties.getProperty("clickhouse_setting_mutations_sync"));
+    }
+
+    @Test
+    public void rejectsStaticInsertDeduplicationToken() {
+        Map<String, String> tableOptions = new HashMap<>();
+        tableOptions.put("properties.insert_deduplication_token", "static-token");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getSinkConnectionProperties(new Configuration(), tableOptions));
+    }
+
+    @Test
+    public void rejectsLegacyConnectTimeoutProperty() {
+        Map<String, String> tableOptions = new HashMap<>();
+        tableOptions.put("properties.connect_timeout", "1000");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getSinkConnectionProperties(new Configuration(), tableOptions));
+    }
+
+    @Test
+    public void rejectsUnsafeFireAndForgetAsyncInsert() {
+        Map<String, String> tableOptions = new HashMap<>();
+        tableOptions.put("properties.async_insert", "1");
+        tableOptions.put("properties.wait_for_async_insert", "0");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.getSinkConnectionProperties(new Configuration(), tableOptions));
     }
 }

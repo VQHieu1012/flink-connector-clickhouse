@@ -149,7 +149,7 @@ public class ClickHouseCatalog extends AbstractCatalog {
             configuration.setProperty(ClickHouseDefaults.USER.getKey(), username);
             configuration.setProperty(ClickHouseDefaults.PASSWORD.getKey(), password);
             ClickHouseDriver driver = new ClickHouseDriver();
-            connection = driver.connect(baseUrl, configuration);
+            connection = driver.connect(baseUrl, configuration).unwrap(ClickHouseConnection.class);
             LOG.info("Created catalog {}, established connection to {}", getName(), baseUrl);
         } catch (Exception e) {
             throw new CatalogException(String.format("Opening catalog %s failed.", getName()), e);

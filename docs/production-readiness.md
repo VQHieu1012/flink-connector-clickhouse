@@ -17,6 +17,9 @@ limitations under the License.
 
 # ClickHouse sink production-readiness plan
 
+Production scope is sink-only. Legacy source, lookup, and catalog implementations are excluded from
+the release contract and do not block a sink release.
+
 The connector provides at-least-once delivery: `SinkWriter.flush(false)` flushes pending JDBC
 batches before a Flink checkpoint. A failure after ClickHouse accepts a batch but before the
 checkpoint completes can replay that batch. Exactly-once is not claimed.
@@ -41,7 +44,8 @@ own deduplication.
   job and filesystem-backed checkpoint storage.
 - [ ] Add fault-injection integration tests for failure before, during, and after `executeBatch`.
 - [x] Define duplicate behavior for ambiguous JDBC outcomes.
-- [ ] Add an integration test that injects an ambiguous post-commit JDBC failure.
+- [x] Add a container integration test that commits to ClickHouse, injects an ambiguous
+  post-commit JDBC failure, reconnects, retries, and verifies the resulting duplicate.
 
 ## P1: resilience and operability
 
@@ -59,18 +63,21 @@ own deduplication.
 
 ## P2: ClickHouse semantics and compatibility
 
-- [ ] Prefer idempotent append designs and document `insert_deduplication_token` limitations.
+- [x] Prefer idempotent append designs, reject unsafe static `insert_deduplication_token` and
+  fire-and-forget async-insert settings, and document deduplication limitations.
 - [x] Treat `ALTER UPDATE/DELETE` as asynchronous mutations and expose their operational cost.
 - [ ] Test ReplicatedMergeTree and Distributed tables across topology changes.
 - [x] Publish an explicit Flink, ClickHouse server, Java, and clickhouse-jdbc compatibility matrix.
-- [ ] Replace reflective catalog metadata access with supported driver APIs.
+- [x] Upgrade to clickhouse-jdbc 0.9.8, use standard JDBC interfaces on the sink path, normalize
+  server settings for JDBC v2, and test the deployable shaded SQL connector artifact.
+- [x] Exclude reflective catalog metadata access from the sink-only production scope.
 
 ## Release gates
 
-Current verified baseline: 26 core tests plus four containerized append, changelog upsert, delete
-mutation, and checkpoint/TaskManager-recovery tests pass with Java 17, Flink 2.1.0, ClickHouse
-24.8, and clickhouse-jdbc 0.6.4. The remaining unchecked items below still block a
-production-ready release.
+Current verified baseline: 29 core tests plus five containerized append, changelog upsert, delete
+mutation, ambiguous post-commit retry, and checkpoint/TaskManager-recovery tests pass with Java 17,
+Flink 2.1.0, ClickHouse 24.8/26.3, and clickhouse-jdbc 0.9.8. The remaining unchecked items below
+block a production-ready release.
 
 - Unit tests must execute (a zero-test build is a failure).
 - Container integration tests cover append, upsert, delete, sharding, checkpoint recovery, and

@@ -29,10 +29,10 @@ import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
-import com.clickhouse.jdbc.ClickHousePreparedStatement;
 import org.junit.Test;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLTransientException;
 
 import static org.junit.Assert.assertEquals;
@@ -59,11 +59,11 @@ public class ClickHouseBatchExecutorTest {
         SimpleCounter retries = new SimpleCounter();
         executor.setRetryCounter(retries);
 
-        ClickHousePreparedStatement firstStatement = mock(ClickHousePreparedStatement.class);
-        ClickHousePreparedStatement secondStatement = mock(ClickHousePreparedStatement.class);
+        PreparedStatement firstStatement = mock(PreparedStatement.class);
+        PreparedStatement secondStatement = mock(PreparedStatement.class);
         when(firstStatement.executeBatch()).thenThrow(new SQLTransientException("connection lost"));
-        ClickHouseConnection firstConnection = mock(ClickHouseConnection.class);
-        ClickHouseConnection secondConnection = mock(ClickHouseConnection.class);
+        Connection firstConnection = mock(Connection.class);
+        Connection secondConnection = mock(Connection.class);
         when(firstConnection.prepareStatement("insert")).thenReturn(firstStatement);
         when(secondConnection.prepareStatement("insert")).thenReturn(secondStatement);
         ClickHouseConnectionProvider provider = mock(ClickHouseConnectionProvider.class);

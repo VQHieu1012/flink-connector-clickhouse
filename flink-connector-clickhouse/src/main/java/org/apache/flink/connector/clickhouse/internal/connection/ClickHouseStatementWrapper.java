@@ -17,19 +17,18 @@
 
 package org.apache.flink.connector.clickhouse.internal.connection;
 
-import com.clickhouse.jdbc.ClickHousePreparedStatement;
-
 import java.math.BigDecimal;
 import java.sql.Date;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 
-/** Wrapper class for ClickHousePreparedStatement. */
+/** Thin wrapper around a JDBC prepared statement used by row converters. */
 public class ClickHouseStatementWrapper {
-    public final ClickHousePreparedStatement statement;
+    public final PreparedStatement statement;
 
-    public ClickHouseStatementWrapper(ClickHousePreparedStatement statement) {
+    public ClickHouseStatementWrapper(PreparedStatement statement) {
         this.statement = statement;
     }
 
@@ -94,7 +93,9 @@ public class ClickHouseStatementWrapper {
     }
 
     public void setArray(int parameterIndex, Object[] array) throws SQLException {
-        statement.setArray(parameterIndex, new ObjectArray(array));
+        // JDBC v2 accepts Java arrays through setObject(). Its setArray() implementation expects
+        // the driver's own Array type and rejects otherwise valid java.sql.Array wrappers.
+        statement.setObject(parameterIndex, array);
     }
 
     public void setObject(int parameterIndex, Object x) throws SQLException {

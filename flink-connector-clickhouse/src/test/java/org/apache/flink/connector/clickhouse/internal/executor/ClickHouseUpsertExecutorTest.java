@@ -32,10 +32,10 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
-import com.clickhouse.jdbc.ClickHousePreparedStatement;
 import org.junit.Test;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLRecoverableException;
 import java.sql.SQLTransientException;
@@ -135,10 +135,10 @@ public class ClickHouseUpsertExecutorTest {
 
     @Test
     public void copiesRowsRetainedPastWriteCall() throws Exception {
-        ClickHousePreparedStatement insertStatement = mock(ClickHousePreparedStatement.class);
-        ClickHousePreparedStatement updateStatement = mock(ClickHousePreparedStatement.class);
-        ClickHousePreparedStatement deleteStatement = mock(ClickHousePreparedStatement.class);
-        ClickHouseConnection connection = mock(ClickHouseConnection.class);
+        PreparedStatement insertStatement = mock(PreparedStatement.class);
+        PreparedStatement updateStatement = mock(PreparedStatement.class);
+        PreparedStatement deleteStatement = mock(PreparedStatement.class);
+        Connection connection = mock(Connection.class);
         when(connection.prepareStatement("insert")).thenReturn(insertStatement);
         when(connection.prepareStatement("update")).thenReturn(updateStatement);
         when(connection.prepareStatement("delete")).thenReturn(deleteStatement);
@@ -158,11 +158,11 @@ public class ClickHouseUpsertExecutorTest {
 
     @Test
     public void reconnectsAndReplaysUpsertBufferAfterTransientFailure() throws Exception {
-        ClickHousePreparedStatement firstInsert = mock(ClickHousePreparedStatement.class);
+        PreparedStatement firstInsert = mock(PreparedStatement.class);
         when(firstInsert.executeBatch()).thenThrow(new SQLTransientException("connection lost"));
-        ClickHouseConnection firstConnection = connection(firstInsert);
-        ClickHousePreparedStatement secondInsert = mock(ClickHousePreparedStatement.class);
-        ClickHouseConnection secondConnection = connection(secondInsert);
+        Connection firstConnection = connection(firstInsert);
+        PreparedStatement secondInsert = mock(PreparedStatement.class);
+        Connection secondConnection = connection(secondInsert);
         ClickHouseConnectionProvider provider = mock(ClickHouseConnectionProvider.class);
         when(provider.getOrCreateConnection()).thenReturn(firstConnection);
         when(provider.reconnect()).thenReturn(secondConnection);
@@ -179,14 +179,11 @@ public class ClickHouseUpsertExecutorTest {
         verify(secondInsert).executeBatch();
     }
 
-    private static ClickHouseConnection connection(ClickHousePreparedStatement insert)
-            throws Exception {
-        ClickHouseConnection connection = mock(ClickHouseConnection.class);
+    private static Connection connection(PreparedStatement insert) throws Exception {
+        Connection connection = mock(Connection.class);
         when(connection.prepareStatement("insert")).thenReturn(insert);
-        when(connection.prepareStatement("update"))
-                .thenReturn(mock(ClickHousePreparedStatement.class));
-        when(connection.prepareStatement("delete"))
-                .thenReturn(mock(ClickHousePreparedStatement.class));
+        when(connection.prepareStatement("update")).thenReturn(mock(PreparedStatement.class));
+        when(connection.prepareStatement("delete")).thenReturn(mock(PreparedStatement.class));
         return connection;
     }
 

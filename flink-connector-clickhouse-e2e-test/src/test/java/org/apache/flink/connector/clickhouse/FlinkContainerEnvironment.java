@@ -67,9 +67,11 @@ public class FlinkContainerEnvironment {
 
     private static final Logger logger = LoggerFactory.getLogger(FlinkContainerEnvironment.class);
     public static final Network NETWORK = Network.newNetwork();
+    private static final String CLICKHOUSE_VERSION =
+            System.getProperty("clickhouse.version", "24.8");
 
     static final ClickHouseContainer CLICKHOUSE_CONTAINER =
-            new ClickHouseContainer("clickhouse/clickhouse-server:24.8")
+            new ClickHouseContainer("clickhouse/clickhouse-server:" + CLICKHOUSE_VERSION)
                     .withNetwork(NETWORK)
                     .withNetworkAliases("clickhouse")
                     .withExposedPorts(8123, 9000)
@@ -85,18 +87,12 @@ public class FlinkContainerEnvironment {
                     .withLogConsumer(new Slf4jLogConsumer(logger));
 
     public static final Path SQL_CONNECTOR_CLICKHOUSE_JAR =
-            ResourceTestUtils.getResource("flink-connector-clickhouse-1.0.0-SNAPSHOT.jar");
-    public static final Path CLICKHOUSE_JDBC_JAR =
-            ResourceTestUtils.getResource("clickhouse-jdbc-0.6.4.jar");
-    public static final Path HTTP_CORE_JAR = ResourceTestUtils.getResource("httpcore5-5.2.jar");
-    public static final Path HTTPCLIENT_JAR =
-            ResourceTestUtils.getResource("httpclient5-5.2.1.jar");
-    public static final Path HTTPCLIENT_H2_JAR =
-            ResourceTestUtils.getResource("httpcore5-h2-5.2.jar");
+            ResourceTestUtils.getResource("flink-sql-connector-clickhouse-1.0.0-SNAPSHOT.jar");
     @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     private GenericContainer<?> jobManager;
     private GenericContainer<?> taskManager;
+    private String lastSqlClientOutput = "";
     protected RestClusterClient<StandaloneClusterId> restClusterClient;
 
     @Before
@@ -222,10 +218,12 @@ public class FlinkContainerEnvironment {
 
         Container.ExecResult execResult =
                 jobManager.execInContainer("bash", "-c", String.join(" ", commands));
+        lastSqlClientOutput =
+                "stdout:\n" + execResult.getStdout() + "\nstderr:\n" + execResult.getStderr();
         logger.info("execute result:" + execResult.getStdout());
         logger.error("execute error:" + execResult.getStderr());
-        if (execResult.getExitCode() != 0) {
-            throw new AssertionError("Failed when submitting the SQL job.");
+        if (execResult.getExitCode() != 0 || execResult.getStdout().contains("[ERROR]")) {
+            throw new AssertionError("Failed when submitting the SQL job.\n" + lastSqlClientOutput);
         }
     }
 
@@ -267,7 +265,19 @@ public class FlinkContainerEnvironment {
                 }
             }
         }
-        throw new AssertionError("Flink job did not start within " + timeout);
+        throw new AssertionError(
+                "Flink job did not start within "
+                        + timeout
+                        + "\nSQL client output:\n"
+                        + lastSqlClientOutput
+                        + "\nJobManager log tail:\n"
+                        + tail(jobManager.getLogs(), 12_000)
+                        + "\nTaskManager log tail:\n"
+                        + tail(taskManager.getLogs(), 12_000));
+    }
+
+    private static String tail(String value, int maxLength) {
+        return value.length() <= maxLength ? value : value.substring(value.length() - maxLength);
     }
 
     private String getJobFailureDetails(RestClusterClient<?> clusterClient, JobID jobId) {

@@ -30,7 +30,6 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
-import com.clickhouse.jdbc.ClickHousePreparedStatement;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -162,9 +161,7 @@ public class ClickHouseRowDataLookupFunction extends LookupFunction {
 
     private void establishConnectionAndStatement() throws SQLException {
         Connection dbConn = connectionProvider.getOrCreateConnection();
-        statement =
-                new ClickHouseStatementWrapper(
-                        (ClickHousePreparedStatement) dbConn.prepareStatement(query));
+        statement = new ClickHouseStatementWrapper(dbConn.prepareStatement(query));
     }
 
     @Override

@@ -17,18 +17,18 @@
 
 package org.apache.flink.connector.clickhouse;
 
-import com.clickhouse.jdbc.ClickHouseConnection;
 import com.clickhouse.jdbc.ClickHouseDataSource;
-import com.clickhouse.jdbc.ClickHouseDriver;
-import com.clickhouse.jdbc.ClickHouseStatement;
 import org.junit.Assert;
 
 import java.sql.Array;
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
@@ -39,23 +39,19 @@ public class ClickhouseProxy implements AutoCloseable {
     private final String jdbcUrl;
     private final String username;
     private final String password;
-    ClickHouseDriver driver;
-    ClickHouseStatement statement;
-    ClickHouseConnection connection;
+    Statement statement;
+    Connection connection;
 
     ClickhouseProxy(String jdbcUrl, String username, String password) {
         this.jdbcUrl = jdbcUrl;
         this.username = username;
         this.password = password;
-        this.driver = new ClickHouseDriver();
     }
 
     public void connect() {
         try {
             if (connection == null || connection.isClosed()) {
                 Properties properties = new Properties();
-                properties.put("username", username);
-                properties.put("password", password);
                 properties.put("compress", "false");
                 properties.put("decompress", "false");
                 ClickHouseDataSource clickHouseDataSource =
@@ -88,11 +84,13 @@ public class ClickhouseProxy implements AutoCloseable {
                         continue;
                     }
                     String columnType = metaData.getColumnTypeName(i);
+                    if (columnType.startsWith("Array")) {
+                        Array array = resultSet.getArray(i);
+                        result.add(
+                                Arrays.deepToString((Object[]) array.getArray()).replace(" ", ""));
+                        continue;
+                    }
                     switch (columnType) {
-                        case "Array":
-                            Array array = resultSet.getArray(i);
-                            result.add(array.toString());
-                            break;
                         case "Timestamp":
                             Timestamp timestamp = resultSet.getTimestamp(i);
                             result.add(timestamp.toString());

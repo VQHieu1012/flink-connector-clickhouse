@@ -35,7 +35,6 @@ import com.clickhouse.data.value.UnsignedByte;
 import com.clickhouse.data.value.UnsignedInteger;
 import com.clickhouse.data.value.UnsignedLong;
 import com.clickhouse.data.value.UnsignedShort;
-import com.clickhouse.jdbc.ClickHousePreparedStatement;
 import com.clickhouse.jdbc.ClickHouseResultSet;
 
 import java.io.Serializable;
@@ -266,10 +265,7 @@ public class ClickHouseRowConverter implements Serializable {
     @FunctionalInterface
     interface SerializationConverter extends Serializable {
 
-        /**
-         * Convert an internal field to java object and fill into the {@link
-         * ClickHousePreparedStatement}.
-         */
+        /** Convert an internal field to a Java object and bind it to the JDBC statement. */
         void serialize(RowData rowData, int index, ClickHouseStatementWrapper statement)
                 throws SQLException;
     }

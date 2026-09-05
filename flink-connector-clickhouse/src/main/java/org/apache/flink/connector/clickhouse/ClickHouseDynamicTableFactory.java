@@ -34,7 +34,8 @@ import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.FactoryUtil.TableFactoryHelper;
 
-import com.clickhouse.client.config.ClickHouseClientOption;
+import com.clickhouse.client.api.ClientConfigProperties;
+import com.clickhouse.jdbc.DriverProperties;
 
 import javax.annotation.Nullable;
 
@@ -72,6 +73,12 @@ import static org.apache.flink.connector.clickhouse.util.ClickHouseUtil.getClick
 /** A {@link DynamicTableSinkFactory} for discovering {@link ClickHouseDynamicTableSink}. */
 public class ClickHouseDynamicTableFactory
         implements DynamicTableSinkFactory, DynamicTableSourceFactory {
+
+    static final String JDBC_CONNECTION_TIMEOUT_PROPERTY = "connection_timeout";
+    static final String JDBC_SOCKET_TIMEOUT_PROPERTY = "socket_timeout";
+    private static final String CLICKHOUSE_SETTING_PREFIX = "clickhouse_setting_";
+    private static final String HTTP_HEADER_PREFIX = "http_header_";
+    private static final Set<String> JDBC_PROPERTY_KEYS = createJdbcPropertyKeys();
 
     public ClickHouseDynamicTableFactory() {}
 
@@ -259,13 +266,80 @@ public class ClickHouseDynamicTableFactory
     Properties getSinkConnectionProperties(
             ReadableConfig config, java.util.Map<String, String> tableOptions) {
         Properties properties = getClickHouseProperties(tableOptions);
+        validateSinkSemanticProperties(properties);
+        properties = normalizeServerSettings(properties);
         properties.putIfAbsent(
-                ClickHouseClientOption.CONNECTION_TIMEOUT.getKey(),
+                JDBC_CONNECTION_TIMEOUT_PROPERTY,
                 Long.toString(config.get(SINK_CONNECTION_TIMEOUT).toMillis()));
         properties.putIfAbsent(
-                ClickHouseClientOption.SOCKET_TIMEOUT.getKey(),
+                JDBC_SOCKET_TIMEOUT_PROPERTY,
                 Long.toString(config.get(SINK_SOCKET_TIMEOUT).toMillis()));
         return properties;
+    }
+
+    private Properties normalizeServerSettings(Properties properties) {
+        Properties normalized = new Properties();
+        for (String key : properties.stringPropertyNames()) {
+            String normalizedKey = isJdbcProperty(key) ? key : DriverProperties.serverSetting(key);
+            normalized.setProperty(normalizedKey, properties.getProperty(key));
+        }
+        return normalized;
+    }
+
+    private boolean isJdbcProperty(String key) {
+        return JDBC_PROPERTY_KEYS.contains(key)
+                || key.startsWith(CLICKHOUSE_SETTING_PREFIX)
+                || key.startsWith(HTTP_HEADER_PREFIX);
+    }
+
+    private static Set<String> createJdbcPropertyKeys() {
+        Set<String> keys = new HashSet<>();
+        for (ClientConfigProperties property : ClientConfigProperties.values()) {
+            keys.add(property.getKey());
+        }
+        for (DriverProperties property : DriverProperties.values()) {
+            keys.add(property.getKey());
+        }
+        // Backward-compatible aliases handled by the ClickHouse JDBC driver.
+        keys.add("compress");
+        keys.add("decompress");
+        return keys;
+    }
+
+    private void validateSinkSemanticProperties(Properties properties) {
+        if (properties.containsKey("connect_timeout")) {
+            throw new IllegalArgumentException(
+                    "JDBC 0.9.x does not support 'properties.connect_timeout'; use "
+                            + "'properties.connection_timeout' instead.");
+        }
+        if (properties.containsKey("insert_deduplication_token")
+                || properties.containsKey(
+                        DriverProperties.serverSetting("insert_deduplication_token"))) {
+            throw new IllegalArgumentException(
+                    "Static 'properties.insert_deduplication_token' is not supported because the "
+                            + "same token would be reused for independent sink batches and could "
+                            + "silently discard valid data.");
+        }
+        if (isEnabled(getServerSetting(properties, "async_insert"))
+                && isDisabled(getServerSetting(properties, "wait_for_async_insert"))) {
+            throw new IllegalArgumentException(
+                    "'properties.wait_for_async_insert' must be enabled when "
+                            + "'properties.async_insert' is enabled so ClickHouse acknowledges "
+                            + "only flushed inserts.");
+        }
+    }
+
+    private String getServerSetting(Properties properties, String key) {
+        String value = properties.getProperty(key);
+        return value != null ? value : properties.getProperty(DriverProperties.serverSetting(key));
+    }
+
+    private boolean isEnabled(String value) {
+        return "1".equals(value) || Boolean.parseBoolean(value);
+    }
+
+    private boolean isDisabled(String value) {
+        return "0".equals(value) || "false".equalsIgnoreCase(value);
     }
 
     private ClickHouseDmlOptions getDmlOptions(ReadableConfig config) {
