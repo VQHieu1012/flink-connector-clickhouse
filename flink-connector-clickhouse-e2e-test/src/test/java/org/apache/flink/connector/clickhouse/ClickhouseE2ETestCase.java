@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.UPDATE;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /** End-to-end test for Clickhouse. */
 public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
@@ -331,6 +332,41 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
         } finally {
             getRestClusterClient().cancel(jobId).get(30L, TimeUnit.SECONDS);
         }
+    }
+
+    @Test
+    public void testAsyncFlushFailureFailsJobWithoutAnotherSinkRecord() throws Exception {
+        createProxy();
+        proxy.execute("CREATE TABLE fail_fast_sink (id Int64) ENGINE = Memory");
+        List<String> sqlLines = new ArrayList<>();
+        sqlLines.add("SET 'restart-strategy.type' = 'none';");
+        sqlLines.add(
+                "CREATE TABLE fail_fast_source (id BIGINT) WITH (\n"
+                        + "  'connector' = 'datagen',\n"
+                        + "  'rows-per-second' = '1',\n"
+                        + "  'fields.id.kind' = 'sequence',\n"
+                        + "  'fields.id.start' = '1',\n"
+                        + "  'fields.id.end' = '1000000'\n"
+                        + ");");
+        sqlLines.add(
+                clickHouseTableDdl(
+                        "fail_fast_sink_table",
+                        "id BIGINT",
+                        "fail_fast_sink",
+                        ",\n  'sink.batch-size' = '1000',\n"
+                                + "  'sink.flush-interval' = '200ms',\n"
+                                + "  'sink.max-retries' = '0'"));
+        sqlLines.add(
+                "INSERT INTO fail_fast_sink_table "
+                        + "SELECT id FROM fail_fast_source WHERE id = 1 OR id = 10;");
+
+        submitClickHouseSQLJob(sqlLines);
+        JobID jobId = waitUntilJobRunning(Duration.of(1, ChronoUnit.MINUTES));
+        proxy.waitForRowCountAtLeast("fail_fast_sink", 1L, 30_000L);
+        proxy.execute("DROP TABLE fail_fast_sink");
+
+        String failureDetails = waitUntilJobFailed(jobId, Duration.of(1, ChronoUnit.MINUTES));
+        assertTrue(failureDetails, failureDetails.contains("Asynchronous ClickHouse flush failed"));
     }
 
     private void createProxy() {

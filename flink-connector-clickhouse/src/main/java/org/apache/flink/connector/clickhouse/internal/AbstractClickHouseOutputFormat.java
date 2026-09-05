@@ -18,6 +18,8 @@
 package org.apache.flink.connector.clickhouse.internal;
 
 import org.apache.flink.api.common.io.RichOutputFormat;
+import org.apache.flink.api.common.operators.MailboxExecutor;
+import org.apache.flink.api.common.operators.MailboxExecutor.MailOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkShardingStrategy;
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConnectionProvider;
@@ -77,6 +79,8 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
 
     protected transient volatile Exception flushException;
 
+    private transient MailboxExecutor mailboxExecutor;
+
     private transient Counter numRecordsSendCounter;
 
     private transient Counter numRecordsSendErrorsCounter;
@@ -130,6 +134,10 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
         return 0L;
     }
 
+    void setMailboxExecutor(MailboxExecutor mailboxExecutor) {
+        this.mailboxExecutor = Preconditions.checkNotNull(mailboxExecutor);
+    }
+
     public void scheduledFlush(long intervalMillis, String executorName) {
         Preconditions.checkArgument(intervalMillis > 0, "flush interval must be greater than 0");
         scheduler = new ScheduledThreadPoolExecutor(1, new ExecutorThreadFactory(executorName));
@@ -141,7 +149,7 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
                                     try {
                                         flush();
                                     } catch (Exception e) {
-                                        flushException = e;
+                                        reportAsyncFlushFailure(e);
                                     }
                                 }
                             }
@@ -149,6 +157,40 @@ public abstract class AbstractClickHouseOutputFormat extends RichOutputFormat<Ro
                         intervalMillis,
                         intervalMillis,
                         TimeUnit.MILLISECONDS);
+    }
+
+    private void reportAsyncFlushFailure(Exception exception) {
+        if (flushException != null) {
+            return;
+        }
+
+        flushException = exception;
+        if (scheduledFuture != null) {
+            scheduledFuture.cancel(false);
+        }
+        if (scheduler != null) {
+            scheduler.shutdown();
+        }
+
+        if (mailboxExecutor == null) {
+            LOG.error(
+                    "Asynchronous ClickHouse flush failed, but no Flink mailbox executor is available.",
+                    exception);
+            return;
+        }
+
+        try {
+            mailboxExecutor.execute(
+                    MailOptions.urgent(),
+                    () -> {
+                        throw new IOException("Asynchronous ClickHouse flush failed.", exception);
+                    },
+                    "Fail ClickHouse sink after an asynchronous flush failure");
+        } catch (RuntimeException mailboxFailure) {
+            LOG.error(
+                    "Unable to submit asynchronous ClickHouse flush failure to the Flink mailbox.",
+                    mailboxFailure);
+        }
     }
 
     public void checkBeforeFlush(final ClickHouseExecutor executor, long pendingRecords)

@@ -1,5 +1,7 @@
 # Flink ClickHouse Connector
 
+NOTE: this fork version only update clickhouse connector as Flink sink.
+
 [Flink](https://github.com/apache/flink) SQL connector
 for [ClickHouse](https://github.com/yandex/ClickHouse) database, this project Powered
 by [ClickHouse JDBC](https://github.com/ClickHouse/clickhouse-jdbc).
@@ -65,6 +67,33 @@ The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `num
 `currentSendTime` metrics. Under the `clickhouse` metric group it also exposes `batchesSent`,
 `batchesSendErrors`, `retries`, `bufferedRecords`, and `bufferedBytes`.
 
+### Asynchronous flush failures and recovery
+
+The flush interval is implemented by a background scheduler. If a scheduled flush encounters a
+non-retryable JDBC error, or exhausts `sink.max-retries`, the connector stores the original error,
+stops the flush scheduler, and submits an urgent failure action to the Flink task mailbox. The sink
+task therefore fails immediately without waiting for another source record, checkpoint, or close
+callback. This includes errors such as a ClickHouse target table being dropped while the job is
+running.
+
+The connector does not keep running with a permanently failed batch and does not retry that batch
+indefinitely in process. Recovery is delegated to Flink and the deployment platform:
+
+1. Inspect the task failure and repair or recreate the ClickHouse target table with the expected
+   schema and engine.
+2. Restart or resume the Flink job.
+3. Restore from the latest completed checkpoint so a replayable source can emit records that were
+   not included in a successful checkpoint.
+
+Enable checkpointing and use a source that supports checkpointed replay for this recovery model.
+Delivery remains at-least-once: records accepted by ClickHouse before an ambiguous failure, or
+records written after the latest completed checkpoint, can be replayed and produce duplicates.
+
+Flink's configured restart strategy still controls the job-level state. An automatic strategy can
+move the job through `FAILING` and `RESTARTING`, potentially retrying before the ClickHouse table is
+recreated. When an external operator owns recovery, configure restart attempts/backoff to match
+that workflow or disable automatic restart and resume the deployment after repair.
+
 ## Connector Options
 
 | Option                                   | Required | Default  | Type     | Description                                                                                                                                                                     |
@@ -77,8 +106,8 @@ The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `num
 | use-local                                | optional | false    | Boolean  | Directly read/write local tables in case of distributed table engine.                                                                                                           |
 | sink.batch-size                          | optional | 1000     | Integer  | The max flush size, over this will flush data.                                                                                                                                  |
 | sink.max-buffered-bytes                  | optional | 64mb     | Memory   | Estimated maximum serialized size of rows retained by each sink writer before flushing.                                                                                        |
-| sink.flush-interval                      | optional | 1s       | Duration | Over this flush interval mills, asynchronous threads will flush data.                                                                                                           |
-| sink.max-retries                         | optional | 3        | Integer  | The max retry times when writing records to the database failed.                                                                                                                |
+| sink.flush-interval                      | optional | 1s       | Duration | Interval for scheduled asynchronous flushes. A terminal scheduled-flush failure is propagated through the Flink mailbox and fails the sink task.                               |
+| sink.max-retries                         | optional | 3        | Integer  | Additional retries after the initial attempt for retryable JDBC failures. Non-retryable or exhausted failures fail the sink task.                                               |
 | sink.connection-timeout                  | optional | 10s      | Duration | Timeout for establishing a ClickHouse sink connection. Can be overridden by `properties.connection_timeout`.                                                                   |
 | sink.socket-timeout                      | optional | 5min     | Duration | Socket timeout for ClickHouse sink requests. Can be overridden by `properties.socket_timeout`.                                                                                  |
 | ~~sink.write-local~~                     | optional | false    | Boolean  | Removed from version 1.15, use `use-local` instead.                                                                                                                             |
@@ -289,11 +318,6 @@ tEnv.executeSql("insert into `clickhouse`.`default`.`t_table` select...");
 
 ## Roadmap
 
-The main branch is currently unstable and should not be used in production
+No roadmap for this fork version.
 
-- [ ] Flink Clickhouse Connector donated to Apache Flink #102 @czy006
-- [ ] Perfect Junit Tests for Connector
-
--- FORK --
-
-Just test on the production.
+Original version

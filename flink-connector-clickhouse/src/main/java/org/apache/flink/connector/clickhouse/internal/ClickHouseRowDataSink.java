@@ -52,6 +52,7 @@ class ClickHouseRowDataSinkWriter implements SinkWriter<RowData> {
             throws IOException {
         this.outputFormat = outputFormat;
         this.outputFormat.initializeMetrics(context.metricGroup());
+        this.outputFormat.setMailboxExecutor(context.getMailboxExecutor());
         this.outputFormat.open();
     }
 

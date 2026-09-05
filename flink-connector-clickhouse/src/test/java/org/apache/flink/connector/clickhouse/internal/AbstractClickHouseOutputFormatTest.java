@@ -18,18 +18,24 @@
 
 package org.apache.flink.connector.clickhouse.internal;
 
+import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.connector.clickhouse.internal.executor.ClickHouseExecutor;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doThrow;
@@ -94,11 +100,36 @@ public class AbstractClickHouseOutputFormatTest {
         assertEquals(1L, batchErrors.getCount());
     }
 
+    @Test
+    public void scheduledFlushFailureFailsTaskThroughMailboxWithoutNewRecord() throws Exception {
+        TestingOutputFormat format = new TestingOutputFormat();
+        format.flushFailure = new IOException("unknown table");
+        TestingMailboxExecutor mailboxExecutor = new TestingMailboxExecutor();
+        ClickHouseRowDataSinkWriter writer =
+                new ClickHouseRowDataSinkWriter(writerContextWithMetrics(mailboxExecutor), format);
+
+        format.scheduledFlush(1L, "test-clickhouse-flush");
+
+        ThrowingRunnable<? extends Exception> fatalMail =
+                mailboxExecutor.mails.poll(5L, TimeUnit.SECONDS);
+        assertNotNull("The flush failure was not propagated to the Flink mailbox", fatalMail);
+        IOException failure = assertThrows(IOException.class, fatalMail::run);
+        assertEquals("Asynchronous ClickHouse flush failed.", failure.getMessage());
+        assertEquals("unknown table", failure.getCause().getMessage());
+        assertTrue(format.scheduler.isShutdown());
+        assertThrows(IOException.class, writer::close);
+    }
+
     private static WriterInitContext writerContextWithMetrics() {
+        return writerContextWithMetrics(mock(MailboxExecutor.class));
+    }
+
+    private static WriterInitContext writerContextWithMetrics(MailboxExecutor mailboxExecutor) {
         WriterInitContext context = mock(WriterInitContext.class);
         SinkWriterMetricGroup metricGroup = mock(SinkWriterMetricGroup.class);
         MetricGroup clickHouseMetrics = mock(MetricGroup.class);
         when(context.metricGroup()).thenReturn(metricGroup);
+        when(context.getMailboxExecutor()).thenReturn(mailboxExecutor);
         when(metricGroup.getNumRecordsSendCounter()).thenReturn(new SimpleCounter());
         when(metricGroup.getNumRecordsSendErrorsCounter()).thenReturn(new SimpleCounter());
         when(metricGroup.getNumBytesSendCounter()).thenReturn(new SimpleCounter());
@@ -107,6 +138,33 @@ public class AbstractClickHouseOutputFormatTest {
         when(clickHouseMetrics.counter("batchesSendErrors")).thenReturn(new SimpleCounter());
         when(clickHouseMetrics.counter("retries")).thenReturn(new SimpleCounter());
         return context;
+    }
+
+    private static final class TestingMailboxExecutor implements MailboxExecutor {
+        private final BlockingQueue<ThrowingRunnable<? extends Exception>> mails =
+                new LinkedBlockingQueue<>();
+
+        @Override
+        public void execute(
+                MailOptions mailOptions,
+                ThrowingRunnable<? extends Exception> command,
+                String descriptionFormat,
+                Object... descriptionArgs) {
+            mails.add(command);
+        }
+
+        @Override
+        public void yield() {}
+
+        @Override
+        public boolean tryYield() {
+            return false;
+        }
+
+        @Override
+        public boolean shouldInterrupt() {
+            return false;
+        }
     }
 
     private static final class TestingOutputFormat extends AbstractClickHouseOutputFormat {

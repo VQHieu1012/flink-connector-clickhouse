@@ -87,7 +87,8 @@ public class FlinkContainerEnvironment {
                     .withLogConsumer(new Slf4jLogConsumer(logger));
 
     public static final Path SQL_CONNECTOR_CLICKHOUSE_JAR =
-            ResourceTestUtils.getResource("flink-sql-connector-clickhouse-1.0.0-SNAPSHOT.jar");
+            ResourceTestUtils.getResource(
+                    "[/\\\\]target[/\\\\]flink-sql-connector-clickhouse-1\\.0\\.0-SNAPSHOT\\.jar$");
     @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     private GenericContainer<?> jobManager;
@@ -270,6 +271,37 @@ public class FlinkContainerEnvironment {
                         + timeout
                         + "\nSQL client output:\n"
                         + lastSqlClientOutput
+                        + "\nJobManager log tail:\n"
+                        + tail(jobManager.getLogs(), 12_000)
+                        + "\nTaskManager log tail:\n"
+                        + tail(taskManager.getLogs(), 12_000));
+    }
+
+    public String waitUntilJobFailed(JobID jobId, Duration timeout) throws Exception {
+        RestClusterClient<?> clusterClient = getRestClusterClient();
+        Deadline deadline = Deadline.fromNow(timeout);
+        while (deadline.hasTimeLeft()) {
+            Collection<JobStatusMessage> jobStatusMessages =
+                    clusterClient.listJobs().get(10, TimeUnit.SECONDS);
+            for (JobStatusMessage message : jobStatusMessages) {
+                if (!message.getJobId().equals(jobId)) {
+                    continue;
+                }
+                if (message.getJobState() == JobStatus.FAILED) {
+                    return getJobFailureDetails(clusterClient, jobId);
+                }
+                if (message.getJobState().isTerminalState()) {
+                    throw new AssertionError(
+                            String.format(
+                                    "Expected job %s to fail, but it terminated with %s",
+                                    jobId, message.getJobState()));
+                }
+            }
+            Thread.sleep(200L);
+        }
+        throw new AssertionError(
+                "Flink job did not fail within "
+                        + timeout
                         + "\nJobManager log tail:\n"
                         + tail(jobManager.getLogs(), 12_000)
                         + "\nTaskManager log tail:\n"
