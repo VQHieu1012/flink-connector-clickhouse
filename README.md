@@ -320,4 +320,4 @@ tEnv.executeSql("insert into `clickhouse`.`default`.`t_table` select...");
 
 No roadmap for this fork version.
 
-Original version
+See the upstream project for the original roadmap and development direction.
