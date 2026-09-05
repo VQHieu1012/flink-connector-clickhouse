@@ -26,6 +26,8 @@ hs_err_pid*
 
 ### Maven template
 target/
+# Temporary/renamed Maven output directories (for example target-flink22-stale-2/)
+target-*/
 pom.xml.tag
 pom.xml.releaseBackup
 pom.xml.versionsBackup
@@ -43,4 +45,4 @@ buildNumber.properties
 .DS_Store
 graphify-out/
 .codex/hooks.json
-.vscode/settings.json
+.vscode/
