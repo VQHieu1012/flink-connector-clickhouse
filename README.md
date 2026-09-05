@@ -32,6 +32,35 @@ during asynchronous merges. Queries that require an immediately reconciled curre
 use an appropriate `FINAL` strategy and account for its read cost. A ClickHouse `PRIMARY KEY` is a
 sparse index and does not enforce row uniqueness.
 
+### Versioned CDC with ReplacingMergeTree
+
+The connector does not inspect or validate the target ClickHouse engine. When a Flink sink declares
+a primary key and sets `sink.update-strategy = 'insert'`, the sink uses an append-only CDC path and
+requires physical `_version` and `_is_deleted` columns. `_version` must be a non-null value supplied
+by the upstream CDC pipeline; the connector does not generate ordering values. `_is_deleted` must be
+`BOOLEAN`, `TINYINT`, or `SMALLINT` (the Flink type normally used for ClickHouse `UInt8`).
+
+Use a target table such as:
+
+```sql
+CREATE TABLE customer_cdc
+(
+    id UInt64,
+    name String,
+    _version UInt64,
+    _is_deleted UInt8
+)
+ENGINE = ReplacingMergeTree(_version, _is_deleted)
+ORDER BY id;
+```
+
+For this strategy, `INSERT` and `UPDATE_AFTER` are inserted with `_is_deleted = 0`,
+`UPDATE_BEFORE` is ignored, and every version is retained in the JDBC batch. A `DELETE` is ignored
+when `sink.ignore-delete = 'true'`; otherwise it is inserted as a new version with
+`_is_deleted = 1`. No `ALTER UPDATE` or `ALTER DELETE` statement is prepared or executed on this
+path. The Flink primary key and ClickHouse `ORDER BY` replacement identity must represent the same
+logical key.
+
 The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `numBytesSend`, and
 `currentSendTime` metrics. Under the `clickhouse` metric group it also exposes `batchesSent`,
 `batchesSendErrors`, `retries`, `bufferedRecords`, and `bufferedBytes`.
@@ -53,11 +82,11 @@ The sink exposes Flink's standard `numRecordsSend`, `numRecordsSendErrors`, `num
 | sink.connection-timeout                  | optional | 10s      | Duration | Timeout for establishing a ClickHouse sink connection. Can be overridden by `properties.connection_timeout`.                                                                   |
 | sink.socket-timeout                      | optional | 5min     | Duration | Socket timeout for ClickHouse sink requests. Can be overridden by `properties.socket_timeout`.                                                                                  |
 | ~~sink.write-local~~                     | optional | false    | Boolean  | Removed from version 1.15, use `use-local` instead.                                                                                                                             |
-| sink.update-strategy                     | optional | update   | String   | Convert a record of type UPDATE_AFTER to update/insert statement or just discard it, available: update, insert, discard.                                                        |
+| sink.update-strategy                     | optional | update   | String   | Handle `UPDATE_AFTER` using ClickHouse mutation (`update`), versioned append-only CDC (`insert`), or discard it. The `insert` strategy requires `_version` and `_is_deleted`.    |
 | sink.partition-strategy                  | optional | balanced | String   | Partition strategy: balanced(round-robin), hash(partition key), shuffle(random).                                                                                                |
 | sink.partition-key                       | optional | none     | String   | Partition key used for hash strategy.                                                                                                                                           |
 | sink.sharding.use-table-definition       | optional | false    | Boolean  | Sharding strategy consistent with definition of distributed table, if set to true, the configuration of `sink.partition-strategy` and `sink.partition-key` will be overwritten. |
-| sink.ignore-delete                       | optional | true     | Boolean  | Whether to ignore delete statements.                                                                                                                                            |
+| sink.ignore-delete                       | optional | true     | Boolean  | Ignore deletes when true. When false, use `ALTER DELETE` for `update`/`discard`, or insert `_is_deleted = 1` tombstones for the `insert` strategy.                               |
 | sink.parallelism                         | optional | none     | Integer  | Defines a custom parallelism for the sink.                                                                                                                                      |
 | scan.partition.column                    | optional | none     | String   | The column name used for partitioning the input.                                                                                                                                |
 | scan.partition.num                       | optional | none     | Integer  | The number of partitions.                                                                                                                                                       |

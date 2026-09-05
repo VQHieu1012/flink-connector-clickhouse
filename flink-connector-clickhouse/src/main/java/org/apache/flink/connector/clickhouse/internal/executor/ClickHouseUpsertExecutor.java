@@ -31,8 +31,10 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.ToLongFunction;
@@ -64,6 +66,10 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
 
     private final Function<RowData, RowData> keyExtractor;
 
+    private final Function<RowData, RowData> activeRowTransformer;
+
+    private final Function<RowData, RowData> tombstoneTransformer;
+
     private final Function<RowData, RowData> rowCopier;
 
     private final ToLongFunction<RowData> rowSizeEstimator;
@@ -75,6 +81,8 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     private final boolean ignoreDelete;
 
     private final Map<RowData, RowData> reduceBuffer = new LinkedHashMap<>();
+
+    private final List<RowData> appendBuffer = new ArrayList<>();
 
     private final Map<RowData, Long> bufferedRecordSizes = new LinkedHashMap<>();
 
@@ -102,6 +110,36 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
             Function<RowData, RowData> rowCopier,
             ToLongFunction<RowData> rowSizeEstimator,
             ClickHouseDmlOptions options) {
+        this(
+                insertSql,
+                updateSql,
+                deleteSql,
+                insertConverter,
+                updateConverter,
+                deleteConverter,
+                updateExtractor,
+                keyExtractor,
+                row -> row,
+                row -> row,
+                rowCopier,
+                rowSizeEstimator,
+                options);
+    }
+
+    public ClickHouseUpsertExecutor(
+            String insertSql,
+            String updateSql,
+            String deleteSql,
+            ClickHouseRowConverter insertConverter,
+            ClickHouseRowConverter updateConverter,
+            ClickHouseRowConverter deleteConverter,
+            Function<RowData, RowData> updateExtractor,
+            Function<RowData, RowData> keyExtractor,
+            Function<RowData, RowData> activeRowTransformer,
+            Function<RowData, RowData> tombstoneTransformer,
+            Function<RowData, RowData> rowCopier,
+            ToLongFunction<RowData> rowSizeEstimator,
+            ClickHouseDmlOptions options) {
         this.insertSql = insertSql;
         this.updateSql = updateSql;
         this.deleteSql = deleteSql;
@@ -110,6 +148,8 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
         this.deleteConverter = deleteConverter;
         this.updateExtractor = updateExtractor;
         this.keyExtractor = keyExtractor;
+        this.activeRowTransformer = activeRowTransformer;
+        this.tombstoneTransformer = tombstoneTransformer;
         this.rowCopier = rowCopier;
         this.rowSizeEstimator = rowSizeEstimator;
         this.maxRetries = options.getMaxRetries();
@@ -121,10 +161,12 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     public void prepareStatement(Connection connection) throws SQLException {
         this.insertStatement =
                 new ClickHouseStatementWrapper(connection.prepareStatement(this.insertSql));
-        this.updateStatement =
-                new ClickHouseStatementWrapper(connection.prepareStatement(this.updateSql));
-        this.deleteStatement =
-                new ClickHouseStatementWrapper(connection.prepareStatement(this.deleteSql));
+        if (!INSERT.equals(updateStrategy)) {
+            this.updateStatement =
+                    new ClickHouseStatementWrapper(connection.prepareStatement(this.updateSql));
+            this.deleteStatement =
+                    new ClickHouseStatementWrapper(connection.prepareStatement(this.deleteSql));
+        }
     }
 
     @Override
@@ -146,8 +188,14 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     public void addToBatch(RowData record) {
         // Flink may reuse RowData instances after write() returns. Retain an owned copy only.
         RowData recordCopy = rowCopier.apply(record);
-        RowData key = keyExtractor.apply(recordCopy);
         long recordSize = rowSizeEstimator.applyAsLong(recordCopy);
+        if (INSERT.equals(updateStrategy)) {
+            appendBuffer.add(recordCopy);
+            bufferedBytes += recordSize;
+            return;
+        }
+
+        RowData key = keyExtractor.apply(recordCopy);
         Long replacedSize = bufferedRecordSizes.put(key, recordSize);
         if (replacedSize != null) {
             bufferedBytes -= replacedSize;
@@ -157,7 +205,7 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     }
 
     int getBufferedRecordCount() {
-        return reduceBuffer.size();
+        return INSERT.equals(updateStrategy) ? appendBuffer.size() : reduceBuffer.size();
     }
 
     @Override
@@ -173,12 +221,15 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
                 retryCounter,
                 this::reconnectAndPrepareStatements);
         reduceBuffer.clear();
+        appendBuffer.clear();
         bufferedRecordSizes.clear();
         bufferedBytes = 0L;
     }
 
     private void bindAndExecuteBatch() throws SQLException {
-        for (RowData value : reduceBuffer.values()) {
+        Iterable<RowData> records =
+                INSERT.equals(updateStrategy) ? appendBuffer : reduceBuffer.values();
+        for (RowData value : records) {
             addValueToBatch(value);
         }
 
@@ -201,12 +252,12 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
     private void addValueToBatch(RowData record) throws SQLException {
         switch (record.getRowKind()) {
             case INSERT:
-                insertConverter.toExternal(record, insertStatement);
+                insertConverter.toExternal(activeRowTransformer.apply(record), insertStatement);
                 insertStatement.addBatch();
                 break;
             case UPDATE_AFTER:
                 if (INSERT.equals(updateStrategy)) {
-                    insertConverter.toExternal(record, insertStatement);
+                    insertConverter.toExternal(activeRowTransformer.apply(record), insertStatement);
                     insertStatement.addBatch();
                 } else if (UPDATE.equals(updateStrategy)) {
                     updateConverter.toExternal(updateExtractor.apply(record), updateStatement);
@@ -219,8 +270,14 @@ public class ClickHouseUpsertExecutor implements ClickHouseExecutor {
                 break;
             case DELETE:
                 if (!ignoreDelete) {
-                    deleteConverter.toExternal(keyExtractor.apply(record), deleteStatement);
-                    deleteStatement.addBatch();
+                    if (INSERT.equals(updateStrategy)) {
+                        insertConverter.toExternal(
+                                tombstoneTransformer.apply(record), insertStatement);
+                        insertStatement.addBatch();
+                    } else {
+                        deleteConverter.toExternal(keyExtractor.apply(record), deleteStatement);
+                        deleteStatement.addBatch();
+                    }
                 }
                 break;
             case UPDATE_BEFORE:

@@ -125,7 +125,7 @@ public class ClickHouseConfigOptions {
                     .enumType(SinkUpdateStrategy.class)
                     .defaultValue(SinkUpdateStrategy.UPDATE)
                     .withDescription(
-                            "Convert a record of type UPDATE_AFTER to update/insert statement or just discard it, available: update, insert, discard."
+                            "Handle UPDATE_AFTER using a mutation, versioned append-only CDC, or discard it; available: update, insert, discard. The insert strategy requires _version and _is_deleted columns."
                                     + " Additional: `table.exec.sink.upsert-materialize`, `org.apache.flink.table.runtime.operators.sink.SinkUpsertMaterializer`");
 
     public static final ConfigOption<SinkShardingStrategy> SINK_PARTITION_STRATEGY =
@@ -152,7 +152,8 @@ public class ClickHouseConfigOptions {
             ConfigOptions.key(ClickHouseConfig.SINK_IGNORE_DELETE)
                     .booleanType()
                     .defaultValue(true)
-                    .withDescription("Whether to ignore deletes. defaults to true.");
+                    .withDescription(
+                            "Whether to ignore deletes. When false, insert strategy writes a tombstone and other strategies use a delete mutation. Defaults to true.");
 
     public static final ConfigOption<Integer> SINK_PARALLELISM = FactoryUtil.SINK_PARALLELISM;
 
@@ -240,7 +241,9 @@ public class ClickHouseConfigOptions {
     /** Update conversion strategy for sink operator. */
     public enum SinkUpdateStrategy {
         UPDATE("update", "Convert UPDATE_AFTER records to update statement."),
-        INSERT("insert", "Convert UPDATE_AFTER records to insert statement."),
+        INSERT(
+                "insert",
+                "Insert UPDATE_AFTER records and DELETE tombstones for versioned append-only CDC."),
         DISCARD("discard", "Discard UPDATE_AFTER records.");
 
         private final String value;

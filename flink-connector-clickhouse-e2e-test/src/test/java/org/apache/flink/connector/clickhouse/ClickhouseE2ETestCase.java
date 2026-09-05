@@ -28,6 +28,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
 
@@ -45,6 +46,7 @@ import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.UPDATE;
 import static org.junit.Assert.assertEquals;
 
@@ -184,6 +186,56 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
     }
 
     @Test
+    public void testReplacingMergeTreeCdcUsesAppendOnlyTombstones() throws Exception {
+        createProxy();
+        proxy.execute(
+                "CREATE TABLE replacing_cdc_sink ("
+                        + "id Int32, name String, _version Int64, _is_deleted UInt8) "
+                        + "ENGINE = ReplacingMergeTree(_version, _is_deleted) ORDER BY id");
+        ClickHouseDmlOptions options =
+                new ClickHouseDmlOptions.Builder()
+                        .withUrl(CLICKHOUSE_CONTAINER.getJdbcUrl())
+                        .withUsername(CLICKHOUSE_CONTAINER.getUsername())
+                        .withPassword(CLICKHOUSE_CONTAINER.getPassword())
+                        .withDatabaseName("default")
+                        .withTableName("replacing_cdc_sink")
+                        .withMaxRetries(0)
+                        .withUpdateStrategy(INSERT)
+                        .withIgnoreDelete(false)
+                        .build();
+        ClickHouseExecutor executor =
+                ClickHouseExecutor.createClickHouseExecutor(
+                        "replacing_cdc_sink",
+                        "default",
+                        null,
+                        new String[] {"id", "name", "_version", "_is_deleted"},
+                        new String[] {"id"},
+                        new String[0],
+                        new LogicalType[] {
+                            new IntType(), new VarCharType(), new BigIntType(), new SmallIntType()
+                        },
+                        options);
+        ClickHouseConnectionProvider provider = new ClickHouseConnectionProvider(options);
+        try {
+            executor.prepareStatement(provider);
+            executor.addToBatch(cdcRow(RowKind.INSERT, 1, "old", 1L));
+            executor.addToBatch(cdcRow(RowKind.UPDATE_AFTER, 1, "current", 2L));
+            executor.addToBatch(cdcRow(RowKind.INSERT, 2, "deleted", 1L));
+            executor.addToBatch(cdcRow(RowKind.DELETE, 2, "deleted", 2L));
+            executor.executeBatch();
+
+            proxy.checkResultWithTimeout(
+                    Arrays.asList("1,current,2,0"),
+                    "replacing_cdc_sink FINAL",
+                    Arrays.asList("id", "name", "_version", "_is_deleted"),
+                    30_000L);
+        } finally {
+            executor.closeStatement();
+            provider.closeConnections();
+        }
+    }
+
+    @Test
     public void testAmbiguousPostCommitFailureProducesDuplicate() throws Exception {
         createProxy();
         proxy.execute("CREATE TABLE ambiguous_sink (id Int64) ENGINE = Memory");
@@ -287,6 +339,10 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
                         CLICKHOUSE_CONTAINER.getJdbcUrl(),
                         CLICKHOUSE_CONTAINER.getUsername(),
                         CLICKHOUSE_CONTAINER.getPassword());
+    }
+
+    private GenericRowData cdcRow(RowKind kind, int id, String name, long version) {
+        return GenericRowData.ofKind(kind, id, StringData.fromString(name), version, (short) 0);
     }
 
     private String clickHouseTableDdl(

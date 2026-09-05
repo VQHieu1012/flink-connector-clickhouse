@@ -19,12 +19,14 @@ package org.apache.flink.connector.clickhouse;
 
 import org.apache.flink.connector.clickhouse.internal.AbstractClickHouseOutputFormat;
 import org.apache.flink.connector.clickhouse.internal.ClickHouseRowDataSink;
+import org.apache.flink.connector.clickhouse.internal.executor.ClickHouseExecutor;
 import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
@@ -33,6 +35,8 @@ import javax.annotation.Nonnull;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
+
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 
 /**
  * A {@link DynamicTableSink} that describes how to create a {@link ClickHouseDynamicTableSink} from
@@ -67,6 +71,15 @@ public class ClickHouseDynamicTableSink implements DynamicTableSink, SupportsPar
         this.primaryKeys = primaryKeys;
         this.partitionKeys = partitionKeys;
         this.physicalRowDataType = physicalRowDataType;
+        if (primaryKeys.length > 0 && INSERT.equals(options.getUpdateStrategy())) {
+            String[] fieldNames =
+                    DataType.getFieldNames(physicalRowDataType).toArray(new String[0]);
+            LogicalType[] fieldTypes =
+                    DataType.getFieldDataTypes(physicalRowDataType).stream()
+                            .map(DataType::getLogicalType)
+                            .toArray(LogicalType[]::new);
+            ClickHouseExecutor.validateCdcSchema(fieldNames, fieldTypes);
+        }
     }
 
     @Override

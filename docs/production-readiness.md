@@ -37,8 +37,8 @@ own deduplication.
 - [x] Propagate final and asynchronous flush failures while still closing statements and
   connections.
 - [x] Validate batch size, flush interval, retry count, and sink parallelism eagerly.
-- [x] Copy retained `RowData` and reduce upsert records by primary-key value independent of
-  `RowKind`.
+- [x] Copy retained `RowData`; reduce mutation records by primary key while retaining every
+  version in append-only CDC batches.
 - [x] Run legacy JUnit 4 tests on the JUnit Platform used by the build.
 - [x] Verify checkpoint completion and recovery after a TaskManager restart with an unbounded SQL
   job and filesystem-backed checkpoint storage.
@@ -66,6 +66,9 @@ own deduplication.
 - [x] Prefer idempotent append designs, reject unsafe static `insert_deduplication_token` and
   fire-and-forget async-insert settings, and document deduplication limitations.
 - [x] Treat `ALTER UPDATE/DELETE` as asynchronous mutations and expose their operational cost.
+- [x] Add an append-only `ReplacingMergeTree(_version, _is_deleted)` CDC contract where updates
+  and delete tombstones are inserts, without target-engine introspection.
+- [x] Test version-preserving update and delete-tombstone semantics against ReplacingMergeTree.
 - [ ] Test ReplicatedMergeTree and Distributed tables across topology changes.
 - [x] Publish an explicit Flink, ClickHouse server, Java, and clickhouse-jdbc compatibility matrix.
 - [x] Upgrade to clickhouse-jdbc 0.9.8, use standard JDBC interfaces on the sink path, normalize
@@ -74,10 +77,10 @@ own deduplication.
 
 ## Release gates
 
-Current verified baseline: 29 core tests plus five containerized append, changelog upsert, delete
-mutation, ambiguous post-commit retry, and checkpoint/TaskManager-recovery tests pass with Java 17,
-Flink 2.1.0, ClickHouse 24.8/26.3, and clickhouse-jdbc 0.9.8. The remaining unchecked items below
-block a production-ready release.
+Current verified baseline: 33 core tests plus six containerized append, mutation changelog,
+ReplacingMergeTree CDC/tombstone, delete mutation, ambiguous post-commit retry, and
+checkpoint/TaskManager-recovery tests pass with Java 17, Flink 2.1.0, ClickHouse 24.8/26.3, and
+clickhouse-jdbc 0.9.8. The remaining unchecked items below block a production-ready release.
 
 - Unit tests must execute (a zero-test build is a failure).
 - Container integration tests cover append, upsert, delete, sharding, checkpoint recovery, and

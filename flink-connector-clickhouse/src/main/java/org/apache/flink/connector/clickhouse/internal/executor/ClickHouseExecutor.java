@@ -18,6 +18,7 @@
 package org.apache.flink.connector.clickhouse.internal.executor;
 
 import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy;
 import org.apache.flink.connector.clickhouse.internal.ClickHouseStatementFactory;
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConnectionProvider;
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseStatementWrapper;
@@ -28,6 +29,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
@@ -51,6 +53,10 @@ import static org.apache.flink.table.data.RowData.createFieldGetter;
 public interface ClickHouseExecutor extends Serializable {
 
     Logger LOG = LoggerFactory.getLogger(ClickHouseExecutor.class);
+
+    String CDC_VERSION_COLUMN = "_version";
+
+    String CDC_DELETED_COLUMN = "_is_deleted";
 
     void prepareStatement(Connection connection) throws SQLException;
 
@@ -237,6 +243,26 @@ public interface ClickHouseExecutor extends Serializable {
                 Arrays.stream(updFields).mapToObj(f -> fieldTypes[f]).toArray(LogicalType[]::new);
         RowDataSerializer rowSerializer = new RowDataSerializer(RowType.of(fieldTypes));
 
+        Function<RowData, RowData> activeRowTransformer = row -> row;
+        Function<RowData, RowData> tombstoneTransformer = row -> row;
+        if (SinkUpdateStrategy.INSERT.equals(options.getUpdateStrategy())) {
+            int[] cdcFields = validateCdcSchema(fieldNames, fieldTypes);
+            int versionField = cdcFields[0];
+            int deletedField = cdcFields[1];
+            activeRowTransformer =
+                    createCdcRowTransformer(
+                            fieldTypes,
+                            versionField,
+                            deletedField,
+                            deletedMarker(fieldTypes[deletedField], false));
+            tombstoneTransformer =
+                    createCdcRowTransformer(
+                            fieldTypes,
+                            versionField,
+                            deletedField,
+                            deletedMarker(fieldTypes[deletedField], true));
+        }
+
         return new ClickHouseUpsertExecutor(
                 insertSql,
                 updateSql,
@@ -246,9 +272,97 @@ public interface ClickHouseExecutor extends Serializable {
                 new ClickHouseRowConverter(RowType.of(keyTypes)),
                 createExtractor(fieldTypes, updFields),
                 createKeyExtractor(fieldTypes, keyFields),
+                activeRowTransformer,
+                tombstoneTransformer,
                 rowSerializer::copy,
                 row -> rowSerializer.toBinaryRow(row).getSizeInBytes(),
                 options);
+    }
+
+    static int[] validateCdcSchema(String[] fieldNames, LogicalType[] fieldTypes) {
+        int versionField = requireField(fieldNames, CDC_VERSION_COLUMN);
+        int deletedField = requireField(fieldNames, CDC_DELETED_COLUMN);
+        validateVersionType(fieldTypes[versionField]);
+        validateDeletedType(fieldTypes[deletedField]);
+        return new int[] {versionField, deletedField};
+    }
+
+    static int requireField(String[] fieldNames, String requiredField) {
+        int field = ArrayUtils.indexOf(fieldNames, requiredField);
+        if (field < 0) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The '%s' column is required when sink.update-strategy is 'insert'.",
+                            requiredField));
+        }
+        return field;
+    }
+
+    static void validateVersionType(LogicalType type) {
+        switch (type.getTypeRoot()) {
+            case TINYINT:
+            case SMALLINT:
+            case INTEGER:
+            case BIGINT:
+            case DECIMAL:
+            case DATE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return;
+            default:
+                throw new IllegalArgumentException(
+                        String.format(
+                                "The '%s' column must use an integer, decimal, date, or timestamp type, but was %s.",
+                                CDC_VERSION_COLUMN, type.asSummaryString()));
+        }
+    }
+
+    static void validateDeletedType(LogicalType type) {
+        LogicalTypeRoot typeRoot = type.getTypeRoot();
+        if (typeRoot != LogicalTypeRoot.BOOLEAN
+                && typeRoot != LogicalTypeRoot.TINYINT
+                && typeRoot != LogicalTypeRoot.SMALLINT) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The '%s' column must use BOOLEAN, TINYINT, or SMALLINT (ClickHouse UInt8), but was %s.",
+                            CDC_DELETED_COLUMN, type.asSummaryString()));
+        }
+    }
+
+    static Object deletedMarker(LogicalType type, boolean deleted) {
+        switch (type.getTypeRoot()) {
+            case BOOLEAN:
+                return deleted;
+            case TINYINT:
+                return (byte) (deleted ? 1 : 0);
+            case SMALLINT:
+                return (short) (deleted ? 1 : 0);
+            default:
+                throw new IllegalArgumentException("Unsupported CDC delete marker type: " + type);
+        }
+    }
+
+    static Function<RowData, RowData> createCdcRowTransformer(
+            LogicalType[] logicalTypes, int versionField, int deletedField, Object deletedMarker) {
+        final RowData.FieldGetter[] fieldGetters = new RowData.FieldGetter[logicalTypes.length];
+        for (int i = 0; i < logicalTypes.length; i++) {
+            fieldGetters[i] = createFieldGetter(logicalTypes[i], i);
+        }
+
+        return row -> {
+            if (row.isNullAt(versionField)) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "The '%s' column must not be null for versioned CDC records.",
+                                CDC_VERSION_COLUMN));
+            }
+            GenericRowData transformed = new GenericRowData(RowKind.INSERT, logicalTypes.length);
+            for (int i = 0; i < logicalTypes.length; i++) {
+                transformed.setField(i, fieldGetters[i].getFieldOrNull(row));
+            }
+            transformed.setField(deletedField, deletedMarker);
+            return transformed;
+        };
     }
 
     static Function<RowData, RowData> createExtractor(LogicalType[] logicalTypes, int[] fields) {
