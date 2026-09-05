@@ -293,3 +293,7 @@ The main branch is currently unstable and should not be used in production
 
 - [ ] Flink Clickhouse Connector donated to Apache Flink #102 @czy006
 - [ ] Perfect Junit Tests for Connector
+
+-- FORK --
+
+Just test on the production.
