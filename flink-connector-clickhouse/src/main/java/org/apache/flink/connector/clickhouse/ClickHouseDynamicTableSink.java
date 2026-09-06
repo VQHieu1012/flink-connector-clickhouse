@@ -78,7 +78,11 @@ public class ClickHouseDynamicTableSink implements DynamicTableSink, SupportsPar
                     DataType.getFieldDataTypes(physicalRowDataType).stream()
                             .map(DataType::getLogicalType)
                             .toArray(LogicalType[]::new);
-            ClickHouseExecutor.validateCdcSchema(fieldNames, fieldTypes);
+            ClickHouseExecutor.validateCdcSchema(
+                    fieldNames,
+                    fieldTypes,
+                    options.getCdcVersionColumn(),
+                    options.getCdcDeletedColumn());
         }
     }
 

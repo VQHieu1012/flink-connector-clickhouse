@@ -153,15 +153,24 @@ ENGINE = ReplacingMergeTree(_version, _is_deleted)
 ORDER BY id;
 ```
 
-The Flink sink can use:
+The Flink sink can use the default column names explicitly:
 
 ```sql
-'sink.update-strategy' = 'insert'
+'sink.update-strategy' = 'insert',
+'sink.cdc.version-column' = '_version',
+'sink.cdc.deleted-column' = '_is_deleted'
 ```
 
-This strategy requires physical `_version` and `_is_deleted` columns in ClickHouse.
+The two CDC column names are configurable and must exactly match distinct physical columns in the
+Flink sink schema. Their defaults are `_version` and `_is_deleted`, preserving the original
+convention. For example, a table using `source_lsn` and `tombstone` can set:
 
-`_version` represents the ordering of changes for the same logical record.
+```sql
+'sink.cdc.version-column' = 'source_lsn',
+'sink.cdc.deleted-column' = 'tombstone'
+```
+
+The configured version column represents the ordering of changes for the same logical record.
 
 The connector does not generate this value automatically. The Flink pipeline is responsible for providing and mapping it.
 
@@ -243,10 +252,10 @@ For `sink.update-strategy = 'insert'`, the connector treats changelog records as
 
 | Flink RowKind   | Sink behavior                                                               |
 | --------------- | --------------------------------------------------------------------------- |
-| `INSERT`        | Insert with `_is_deleted = 0`                                               |
-| `UPDATE_AFTER`  | Insert a new version with `_is_deleted = 0`                                 |
+| `INSERT`        | Insert with the configured deleted marker set to `0`                        |
+| `UPDATE_AFTER`  | Insert a new version with the configured deleted marker set to `0`          |
 | `UPDATE_BEFORE` | Ignore                                                                      |
-| `DELETE`        | Insert a new version with `_is_deleted = 1` when delete handling is enabled |
+| `DELETE`        | Insert a new version with the configured marker set to `1` when enabled     |
 
 This strategy does not execute ClickHouse `ALTER UPDATE` or `ALTER DELETE` mutations.
 
@@ -379,6 +388,8 @@ FROM source_table;
 | `sink.connection-timeout` | no       | `10s`      | JDBC connection timeout                        |
 | `sink.socket-timeout`     | no       | `5min`     | JDBC socket timeout                            |
 | `sink.update-strategy`    | no       | `update`   | Update handling strategy                       |
+| `sink.cdc.version-column` | no       | `_version`    | Ordering column for versioned append-only CDC  |
+| `sink.cdc.deleted-column` | no       | `_is_deleted` | Delete-marker column for append-only CDC       |
 | `sink.ignore-delete`      | no       | `true`     | Ignore or process delete events                |
 | `sink.parallelism`        | no       | inherited  | Explicit sink parallelism                      |
 | `sink.partition-strategy` | no       | `balanced` | `balanced`, `hash`, or `shuffle`               |
@@ -399,7 +410,7 @@ If the application requires waiting for mutation completion, configure an approp
 
 Uses the append-based CDC strategy with `ReplacingMergeTree`.
 
-Requires:
+Requires the configured CDC columns, which default to:
 
 ```text
 _version

@@ -26,6 +26,9 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.DEFAULT_CDC_DELETED_COLUMN;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.DEFAULT_CDC_VERSION_COLUMN;
+
 /** ClickHouse data modify language options. */
 public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
 
@@ -42,6 +45,10 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
     private final boolean useLocal;
 
     private final SinkUpdateStrategy updateStrategy;
+
+    private final String cdcVersionColumn;
+
+    private final String cdcDeletedColumn;
 
     private final SinkShardingStrategy shardingStrategy;
 
@@ -65,6 +72,8 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
             int maxRetires,
             boolean useLocal,
             SinkUpdateStrategy updateStrategy,
+            String cdcVersionColumn,
+            String cdcDeletedColumn,
             SinkShardingStrategy shardingStrategy,
             List<String> shardingKey,
             boolean shardingUseTableDef,
@@ -77,6 +86,8 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
         this.maxRetries = maxRetires;
         this.useLocal = useLocal;
         this.updateStrategy = updateStrategy;
+        this.cdcVersionColumn = cdcVersionColumn;
+        this.cdcDeletedColumn = cdcDeletedColumn;
         this.shardingStrategy = shardingStrategy;
         this.shardingKey = shardingKey;
         this.shardingUseTableDef = shardingUseTableDef;
@@ -106,6 +117,14 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
 
     public SinkUpdateStrategy getUpdateStrategy() {
         return updateStrategy;
+    }
+
+    public String getCdcVersionColumn() {
+        return cdcVersionColumn;
+    }
+
+    public String getCdcDeletedColumn() {
+        return cdcDeletedColumn;
     }
 
     public SinkShardingStrategy getShardingStrategy() {
@@ -141,6 +160,8 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
         private int maxRetries;
         private boolean useLocal;
         private SinkUpdateStrategy updateStrategy;
+        private String cdcVersionColumn = DEFAULT_CDC_VERSION_COLUMN;
+        private String cdcDeletedColumn = DEFAULT_CDC_DELETED_COLUMN;
         private SinkShardingStrategy shardingStrategy;
         private List<String> shardingKey;
         private boolean shardingUseTableDef;
@@ -199,6 +220,16 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
             return this;
         }
 
+        public Builder withCdcVersionColumn(String cdcVersionColumn) {
+            this.cdcVersionColumn = cdcVersionColumn;
+            return this;
+        }
+
+        public Builder withCdcDeletedColumn(String cdcDeletedColumn) {
+            this.cdcDeletedColumn = cdcDeletedColumn;
+            return this;
+        }
+
         public Builder withUseLocal(Boolean useLocal) {
             this.useLocal = useLocal;
             return this;
@@ -245,6 +276,8 @@ public class ClickHouseDmlOptions extends ClickHouseConnectionOptions {
                     maxRetries,
                     useLocal,
                     updateStrategy,
+                    cdcVersionColumn,
+                    cdcDeletedColumn,
                     shardingStrategy,
                     shardingKey,
                     shardingUseTableDef,

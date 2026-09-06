@@ -37,6 +37,10 @@ import java.util.function.Function;
 /** clickhouse config options. */
 public class ClickHouseConfigOptions {
 
+    public static final String DEFAULT_CDC_VERSION_COLUMN = "_version";
+
+    public static final String DEFAULT_CDC_DELETED_COLUMN = "_is_deleted";
+
     public static final ConfigOption<String> URL =
             ConfigOptions.key(ClickHouseConfig.URL)
                     .stringType()
@@ -125,8 +129,22 @@ public class ClickHouseConfigOptions {
                     .enumType(SinkUpdateStrategy.class)
                     .defaultValue(SinkUpdateStrategy.UPDATE)
                     .withDescription(
-                            "Handle UPDATE_AFTER using a mutation, versioned append-only CDC, or discard it; available: update, insert, discard. The insert strategy requires _version and _is_deleted columns."
+                            "Handle UPDATE_AFTER using a mutation, versioned append-only CDC, or discard it; available: update, insert, discard. The insert strategy requires configured CDC version and deleted-marker columns."
                                     + " Additional: `table.exec.sink.upsert-materialize`, `org.apache.flink.table.runtime.operators.sink.SinkUpsertMaterializer`");
+
+    public static final ConfigOption<String> SINK_CDC_VERSION_COLUMN =
+            ConfigOptions.key(ClickHouseConfig.SINK_CDC_VERSION_COLUMN)
+                    .stringType()
+                    .defaultValue(DEFAULT_CDC_VERSION_COLUMN)
+                    .withDescription(
+                            "Physical sink column containing the ordering version for versioned append-only CDC.");
+
+    public static final ConfigOption<String> SINK_CDC_DELETED_COLUMN =
+            ConfigOptions.key(ClickHouseConfig.SINK_CDC_DELETED_COLUMN)
+                    .stringType()
+                    .defaultValue(DEFAULT_CDC_DELETED_COLUMN)
+                    .withDescription(
+                            "Physical sink column used as the delete marker for versioned append-only CDC.");
 
     public static final ConfigOption<SinkShardingStrategy> SINK_PARTITION_STRATEGY =
             ConfigOptions.key(ClickHouseConfig.SINK_PARTITION_STRATEGY)

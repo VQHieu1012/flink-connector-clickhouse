@@ -244,6 +244,8 @@ public class ClickHouseUpsertExecutorTest {
                 new ClickHouseDmlOptions.Builder()
                         .withUpdateStrategy(INSERT)
                         .withIgnoreDelete(false)
+                        .withCdcVersionColumn("source_lsn")
+                        .withCdcDeletedColumn("tombstone")
                         .build();
 
         IllegalArgumentException exception =
@@ -260,7 +262,30 @@ public class ClickHouseUpsertExecutorTest {
                                         new LogicalType[] {new BigIntType(), new VarCharType()},
                                         options));
 
-        assertTrue(exception.getMessage().contains("_version"));
+        assertTrue(exception.getMessage().contains("source_lsn"));
+    }
+
+    @Test
+    public void acceptsConfiguredCdcMetadataColumns() {
+        ClickHouseDmlOptions options =
+                new ClickHouseDmlOptions.Builder()
+                        .withUpdateStrategy(INSERT)
+                        .withCdcVersionColumn("source_lsn")
+                        .withCdcDeletedColumn("tombstone")
+                        .build();
+
+        ClickHouseExecutor executor =
+                ClickHouseExecutor.createClickHouseExecutor(
+                        "sink",
+                        "default",
+                        null,
+                        new String[] {"id", "name", "source_lsn", "tombstone"},
+                        new String[] {"id"},
+                        new String[0],
+                        FIELD_TYPES,
+                        options);
+
+        assertTrue(executor instanceof ClickHouseUpsertExecutor);
     }
 
     private static Connection connection(PreparedStatement insert) throws Exception {
@@ -304,8 +329,10 @@ public class ClickHouseUpsertExecutorTest {
                 new ClickHouseRowConverter(RowType.of(new BigIntType())),
                 row -> row,
                 ClickHouseExecutor.createKeyExtractor(FIELD_TYPES, new int[] {0}),
-                ClickHouseExecutor.createCdcRowTransformer(FIELD_TYPES, 2, 3, (short) 0),
-                ClickHouseExecutor.createCdcRowTransformer(FIELD_TYPES, 2, 3, (short) 1),
+                ClickHouseExecutor.createCdcRowTransformer(
+                        FIELD_TYPES, 2, 3, "_version", (short) 0),
+                ClickHouseExecutor.createCdcRowTransformer(
+                        FIELD_TYPES, 2, 3, "_version", (short) 1),
                 serializer::copy,
                 row -> serializer.toBinaryRow(row).getSizeInBytes(),
                 options);

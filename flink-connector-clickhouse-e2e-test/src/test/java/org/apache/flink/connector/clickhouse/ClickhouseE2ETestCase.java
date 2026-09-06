@@ -191,8 +191,8 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
         createProxy();
         proxy.execute(
                 "CREATE TABLE replacing_cdc_sink ("
-                        + "id Int32, name String, _version Int64, _is_deleted UInt8) "
-                        + "ENGINE = ReplacingMergeTree(_version, _is_deleted) ORDER BY id");
+                        + "id Int32, name String, source_lsn Int64, tombstone UInt8) "
+                        + "ENGINE = ReplacingMergeTree(source_lsn, tombstone) ORDER BY id");
         ClickHouseDmlOptions options =
                 new ClickHouseDmlOptions.Builder()
                         .withUrl(CLICKHOUSE_CONTAINER.getJdbcUrl())
@@ -203,13 +203,15 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
                         .withMaxRetries(0)
                         .withUpdateStrategy(INSERT)
                         .withIgnoreDelete(false)
+                        .withCdcVersionColumn("source_lsn")
+                        .withCdcDeletedColumn("tombstone")
                         .build();
         ClickHouseExecutor executor =
                 ClickHouseExecutor.createClickHouseExecutor(
                         "replacing_cdc_sink",
                         "default",
                         null,
-                        new String[] {"id", "name", "_version", "_is_deleted"},
+                        new String[] {"id", "name", "source_lsn", "tombstone"},
                         new String[] {"id"},
                         new String[0],
                         new LogicalType[] {
@@ -228,7 +230,7 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
             proxy.checkResultWithTimeout(
                     Arrays.asList("1,current,2,0"),
                     "replacing_cdc_sink FINAL",
-                    Arrays.asList("id", "name", "_version", "_is_deleted"),
+                    Arrays.asList("id", "name", "source_lsn", "tombstone"),
                     30_000L);
         } finally {
             executor.closeStatement();

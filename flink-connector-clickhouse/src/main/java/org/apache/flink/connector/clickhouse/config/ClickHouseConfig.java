@@ -50,6 +50,10 @@ public class ClickHouseConfig {
 
     public static final String SINK_UPDATE_STRATEGY = "sink.update-strategy";
 
+    public static final String SINK_CDC_VERSION_COLUMN = "sink.cdc.version-column";
+
+    public static final String SINK_CDC_DELETED_COLUMN = "sink.cdc.deleted-column";
+
     public static final String SINK_PARTITION_STRATEGY = "sink.partition-strategy";
 
     public static final String SINK_PARTITION_KEY = "sink.partition-key";
