@@ -53,6 +53,8 @@ import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptio
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SCAN_PARTITION_NUM;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SCAN_PARTITION_UPPER_BOUND;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_BATCH_SIZE;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CDC_DELETED_COLUMN;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CDC_VERSION_COLUMN;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CONNECTION_TIMEOUT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_FLUSH_INTERVAL;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_IGNORE_DELETE;
@@ -64,6 +66,7 @@ import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptio
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_SHARDING_USE_TABLE_DEF;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_SOCKET_TIMEOUT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_UPDATE_STRATEGY;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.TABLE_NAME;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.URL;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.USERNAME;
@@ -151,6 +154,8 @@ public class ClickHouseDynamicTableFactory
         optionalOptions.add(SINK_CONNECTION_TIMEOUT);
         optionalOptions.add(SINK_SOCKET_TIMEOUT);
         optionalOptions.add(SINK_UPDATE_STRATEGY);
+        optionalOptions.add(SINK_CDC_VERSION_COLUMN);
+        optionalOptions.add(SINK_CDC_DELETED_COLUMN);
         optionalOptions.add(SINK_PARTITION_STRATEGY);
         optionalOptions.add(SINK_PARTITION_KEY);
         optionalOptions.add(SINK_SHARDING_USE_TABLE_DEF);
@@ -193,6 +198,18 @@ public class ClickHouseDynamicTableFactory
             throw new IllegalArgumentException(
                     String.format(
                             "The value of '%s' must not be negative.", SINK_MAX_RETRIES.key()));
+        }
+        if (INSERT.equals(config.get(SINK_UPDATE_STRATEGY))) {
+            String versionColumn = config.get(SINK_CDC_VERSION_COLUMN);
+            String deletedColumn = config.get(SINK_CDC_DELETED_COLUMN);
+            validateCdcColumnName(SINK_CDC_VERSION_COLUMN, versionColumn);
+            validateCdcColumnName(SINK_CDC_DELETED_COLUMN, deletedColumn);
+            if (versionColumn.equals(deletedColumn)) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "The values of '%s' and '%s' must refer to different columns.",
+                                SINK_CDC_VERSION_COLUMN.key(), SINK_CDC_DELETED_COLUMN.key()));
+            }
         }
         validatePositiveDuration(config, SINK_CONNECTION_TIMEOUT);
         validatePositiveDuration(config, SINK_SOCKET_TIMEOUT);
@@ -260,6 +277,13 @@ public class ClickHouseDynamicTableFactory
         if (config.get(option).isZero() || config.get(option).isNegative()) {
             throw new IllegalArgumentException(
                     String.format("The value of '%s' must be greater than zero.", option.key()));
+        }
+    }
+
+    private void validateCdcColumnName(ConfigOption<String> option, String columnName) {
+        if (columnName.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                    String.format("The value of '%s' must not be blank.", option.key()));
         }
     }
 
@@ -342,7 +366,7 @@ public class ClickHouseDynamicTableFactory
         return "0".equals(value) || "false".equalsIgnoreCase(value);
     }
 
-    private ClickHouseDmlOptions getDmlOptions(ReadableConfig config) {
+    ClickHouseDmlOptions getDmlOptions(ReadableConfig config) {
         return new ClickHouseDmlOptions.Builder()
                 .withUrl(config.get(URL))
                 .withUsername(config.get(USERNAME))
@@ -355,6 +379,8 @@ public class ClickHouseDynamicTableFactory
                 .withMaxRetries(config.get(SINK_MAX_RETRIES))
                 .withUseLocal(config.get(USE_LOCAL))
                 .withUpdateStrategy(config.get(SINK_UPDATE_STRATEGY))
+                .withCdcVersionColumn(config.get(SINK_CDC_VERSION_COLUMN))
+                .withCdcDeletedColumn(config.get(SINK_CDC_DELETED_COLUMN))
                 .withShardingStrategy(config.get(SINK_PARTITION_STRATEGY))
                 .withShardingKey(config.get(SINK_PARTITION_KEY))
                 .withUseTableDef(config.get(SINK_SHARDING_USE_TABLE_DEF))

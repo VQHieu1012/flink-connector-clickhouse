@@ -54,10 +54,6 @@ public interface ClickHouseExecutor extends Serializable {
 
     Logger LOG = LoggerFactory.getLogger(ClickHouseExecutor.class);
 
-    String CDC_VERSION_COLUMN = "_version";
-
-    String CDC_DELETED_COLUMN = "_is_deleted";
-
     void prepareStatement(Connection connection) throws SQLException;
 
     void prepareStatement(ClickHouseConnectionProvider connectionProvider) throws SQLException;
@@ -246,7 +242,10 @@ public interface ClickHouseExecutor extends Serializable {
         Function<RowData, RowData> activeRowTransformer = row -> row;
         Function<RowData, RowData> tombstoneTransformer = row -> row;
         if (SinkUpdateStrategy.INSERT.equals(options.getUpdateStrategy())) {
-            int[] cdcFields = validateCdcSchema(fieldNames, fieldTypes);
+            String versionColumn = options.getCdcVersionColumn();
+            String deletedColumn = options.getCdcDeletedColumn();
+            int[] cdcFields =
+                    validateCdcSchema(fieldNames, fieldTypes, versionColumn, deletedColumn);
             int versionField = cdcFields[0];
             int deletedField = cdcFields[1];
             activeRowTransformer =
@@ -254,12 +253,14 @@ public interface ClickHouseExecutor extends Serializable {
                             fieldTypes,
                             versionField,
                             deletedField,
+                            versionColumn,
                             deletedMarker(fieldTypes[deletedField], false));
             tombstoneTransformer =
                     createCdcRowTransformer(
                             fieldTypes,
                             versionField,
                             deletedField,
+                            versionColumn,
                             deletedMarker(fieldTypes[deletedField], true));
         }
 
@@ -279,11 +280,15 @@ public interface ClickHouseExecutor extends Serializable {
                 options);
     }
 
-    static int[] validateCdcSchema(String[] fieldNames, LogicalType[] fieldTypes) {
-        int versionField = requireField(fieldNames, CDC_VERSION_COLUMN);
-        int deletedField = requireField(fieldNames, CDC_DELETED_COLUMN);
-        validateVersionType(fieldTypes[versionField]);
-        validateDeletedType(fieldTypes[deletedField]);
+    static int[] validateCdcSchema(
+            String[] fieldNames,
+            LogicalType[] fieldTypes,
+            String versionColumn,
+            String deletedColumn) {
+        int versionField = requireField(fieldNames, versionColumn);
+        int deletedField = requireField(fieldNames, deletedColumn);
+        validateVersionType(fieldTypes[versionField], versionColumn);
+        validateDeletedType(fieldTypes[deletedField], deletedColumn);
         return new int[] {versionField, deletedField};
     }
 
@@ -298,7 +303,7 @@ public interface ClickHouseExecutor extends Serializable {
         return field;
     }
 
-    static void validateVersionType(LogicalType type) {
+    static void validateVersionType(LogicalType type, String versionColumn) {
         switch (type.getTypeRoot()) {
             case TINYINT:
             case SMALLINT:
@@ -313,11 +318,11 @@ public interface ClickHouseExecutor extends Serializable {
                 throw new IllegalArgumentException(
                         String.format(
                                 "The '%s' column must use an integer, decimal, date, or timestamp type, but was %s.",
-                                CDC_VERSION_COLUMN, type.asSummaryString()));
+                                versionColumn, type.asSummaryString()));
         }
     }
 
-    static void validateDeletedType(LogicalType type) {
+    static void validateDeletedType(LogicalType type, String deletedColumn) {
         LogicalTypeRoot typeRoot = type.getTypeRoot();
         if (typeRoot != LogicalTypeRoot.BOOLEAN
                 && typeRoot != LogicalTypeRoot.TINYINT
@@ -325,7 +330,7 @@ public interface ClickHouseExecutor extends Serializable {
             throw new IllegalArgumentException(
                     String.format(
                             "The '%s' column must use BOOLEAN, TINYINT, or SMALLINT (ClickHouse UInt8), but was %s.",
-                            CDC_DELETED_COLUMN, type.asSummaryString()));
+                            deletedColumn, type.asSummaryString()));
         }
     }
 
@@ -343,7 +348,11 @@ public interface ClickHouseExecutor extends Serializable {
     }
 
     static Function<RowData, RowData> createCdcRowTransformer(
-            LogicalType[] logicalTypes, int versionField, int deletedField, Object deletedMarker) {
+            LogicalType[] logicalTypes,
+            int versionField,
+            int deletedField,
+            String versionColumn,
+            Object deletedMarker) {
         final RowData.FieldGetter[] fieldGetters = new RowData.FieldGetter[logicalTypes.length];
         for (int i = 0; i < logicalTypes.length; i++) {
             fieldGetters[i] = createFieldGetter(logicalTypes[i], i);
@@ -354,7 +363,7 @@ public interface ClickHouseExecutor extends Serializable {
                 throw new IllegalArgumentException(
                         String.format(
                                 "The '%s' column must not be null for versioned CDC records.",
-                                CDC_VERSION_COLUMN));
+                                versionColumn));
             }
             GenericRowData transformed = new GenericRowData(RowKind.INSERT, logicalTypes.length);
             for (int i = 0; i < logicalTypes.length; i++) {

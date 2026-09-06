@@ -20,6 +20,7 @@ package org.apache.flink.connector.clickhouse;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
 
 import org.junit.Test;
 
@@ -29,12 +30,16 @@ import java.util.Map;
 import java.util.Properties;
 
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_BATCH_SIZE;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CDC_DELETED_COLUMN;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CDC_VERSION_COLUMN;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_CONNECTION_TIMEOUT;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_FLUSH_INTERVAL;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_MAX_BUFFERED_BYTES;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_MAX_RETRIES;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_PARALLELISM;
 import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_SOCKET_TIMEOUT;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SINK_UPDATE_STRATEGY;
+import static org.apache.flink.connector.clickhouse.config.ClickHouseConfigOptions.SinkUpdateStrategy.INSERT;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
@@ -73,6 +78,38 @@ public class ClickHouseDynamicTableFactoryTest {
         config.set(SINK_MAX_RETRIES, -1);
 
         assertThrows(IllegalArgumentException.class, () -> factory.validateConfigOptions(config));
+    }
+
+    @Test
+    public void supportsConfigurableCdcColumnNames() {
+        Configuration config = new Configuration();
+        config.set(SINK_UPDATE_STRATEGY, INSERT);
+        config.set(SINK_CDC_VERSION_COLUMN, "source_lsn");
+        config.set(SINK_CDC_DELETED_COLUMN, "tombstone");
+
+        factory.validateConfigOptions(config);
+        ClickHouseDmlOptions options = factory.getDmlOptions(config);
+
+        assertEquals("source_lsn", options.getCdcVersionColumn());
+        assertEquals("tombstone", options.getCdcDeletedColumn());
+    }
+
+    @Test
+    public void rejectsInvalidCdcColumnNames() {
+        Configuration duplicateColumns = new Configuration();
+        duplicateColumns.set(SINK_UPDATE_STRATEGY, INSERT);
+        duplicateColumns.set(SINK_CDC_VERSION_COLUMN, "cdc_metadata");
+        duplicateColumns.set(SINK_CDC_DELETED_COLUMN, "cdc_metadata");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.validateConfigOptions(duplicateColumns));
+
+        Configuration blankVersionColumn = new Configuration();
+        blankVersionColumn.set(SINK_UPDATE_STRATEGY, INSERT);
+        blankVersionColumn.set(SINK_CDC_VERSION_COLUMN, "  ");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> factory.validateConfigOptions(blankVersionColumn));
     }
 
     @Test

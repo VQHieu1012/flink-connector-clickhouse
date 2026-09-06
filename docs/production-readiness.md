@@ -66,8 +66,9 @@ own deduplication.
 - [x] Prefer idempotent append designs, reject unsafe static `insert_deduplication_token` and
   fire-and-forget async-insert settings, and document deduplication limitations.
 - [x] Treat `ALTER UPDATE/DELETE` as asynchronous mutations and expose their operational cost.
-- [x] Add an append-only `ReplacingMergeTree(_version, _is_deleted)` CDC contract where updates
-  and delete tombstones are inserts, without target-engine introspection.
+- [x] Add an append-only `ReplacingMergeTree(version, deleted)` CDC contract with configurable
+  physical column names (defaulting to `_version` and `_is_deleted`), where updates and delete
+  tombstones are inserts, without target-engine introspection.
 - [x] Test version-preserving update and delete-tombstone semantics against ReplacingMergeTree.
 - [ ] Test ReplicatedMergeTree and Distributed tables across topology changes.
 - [x] Publish an explicit Flink, ClickHouse server, Java, and clickhouse-jdbc compatibility matrix.
