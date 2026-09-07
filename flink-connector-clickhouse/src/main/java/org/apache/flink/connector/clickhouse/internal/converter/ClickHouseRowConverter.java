@@ -169,8 +169,8 @@ public class ClickHouseRowConverter implements Serializable {
                 };
             case ARRAY:
             case MAP:
-                return val -> ClickHouseConverterUtils.toInternal(val, type);
             case ROW:
+                return val -> ClickHouseConverterUtils.toInternal(val, type);
             case MULTISET:
             case RAW:
             default:
@@ -254,8 +254,14 @@ public class ClickHouseRowConverter implements Serializable {
                         statement.setObject(
                                 index + 1,
                                 ClickHouseConverterUtils.toExternal(val.getMap(index), type));
-            case MULTISET:
             case ROW:
+                final int fieldCount = type.getChildren().size();
+                return (val, index, statement) ->
+                        statement.setObject(
+                                index + 1,
+                                ClickHouseConverterUtils.toExternal(
+                                        val.getRow(index, fieldCount), type));
+            case MULTISET:
             case RAW:
             default:
                 throw new UnsupportedOperationException("Unsupported type:" + type);

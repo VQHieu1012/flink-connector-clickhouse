@@ -511,7 +511,7 @@ v1.1.0
 | `INTERVAL_DAY_TIME`   | `Int64`                                                       |
 | `ARRAY`               | `Array`                                                       |
 | `MAP`                 | `Map`                                                         |
-| `ROW`                 | Not supported                                                 |
+| `ROW`                 | `Tuple`                                                       |
 | `MULTISET`            | Not supported                                                 |
 | `RAW`                 | Not supported                                                 |
 
