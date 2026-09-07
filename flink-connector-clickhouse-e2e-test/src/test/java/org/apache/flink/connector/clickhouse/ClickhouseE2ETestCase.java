@@ -19,15 +19,18 @@ package org.apache.flink.connector.clickhouse;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.connector.clickhouse.internal.connection.ClickHouseConnectionProvider;
+import org.apache.flink.connector.clickhouse.internal.converter.ClickHouseRowConverter;
 import org.apache.flink.connector.clickhouse.internal.executor.ClickHouseExecutor;
 import org.apache.flink.connector.clickhouse.internal.options.ClickHouseDmlOptions;
 import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.SmallIntType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
@@ -36,7 +39,9 @@ import org.junit.After;
 import org.junit.Test;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLRecoverableException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -99,6 +104,69 @@ public class ClickhouseE2ETestCase extends FlinkContainerEnvironment {
                 "test_insert",
                 Arrays.asList("id", "name", "float32_column", "datetime_column", "array_column"),
                 600_000);
+    }
+
+    @Test
+    public void testRowSink() throws Exception {
+        createProxy();
+        proxy.execute(
+                "CREATE TABLE row_sink ("
+                        + "id Int32, profile Tuple(value Int32, label String, optional Nullable(Int32))) "
+                        + "ENGINE = Memory");
+        proxy.execute(
+                "CREATE VIEW row_sink_flat AS SELECT id, "
+                        + "tupleElement(profile, 'value') AS value, "
+                        + "tupleElement(profile, 'label') AS label, "
+                        + "isNull(tupleElement(profile, 'optional')) AS optional_is_null "
+                        + "FROM row_sink");
+        RowType profileType = RowType.of(new IntType(), new VarCharType(), new IntType());
+        ClickHouseDmlOptions options =
+                new ClickHouseDmlOptions.Builder()
+                        .withUrl(CLICKHOUSE_CONTAINER.getJdbcUrl())
+                        .withUsername(CLICKHOUSE_CONTAINER.getUsername())
+                        .withPassword(CLICKHOUSE_CONTAINER.getPassword())
+                        .withDatabaseName("default")
+                        .withTableName("row_sink")
+                        .withMaxRetries(0)
+                        .build();
+        ClickHouseExecutor executor =
+                ClickHouseExecutor.createClickHouseExecutor(
+                        "row_sink",
+                        "default",
+                        null,
+                        new String[] {"id", "profile"},
+                        new String[0],
+                        new String[0],
+                        new LogicalType[] {new IntType(), profileType},
+                        options);
+        ClickHouseConnectionProvider provider = new ClickHouseConnectionProvider(options);
+        try {
+            executor.prepareStatement(provider);
+            executor.addToBatch(
+                    GenericRowData.of(
+                            1, GenericRowData.of(42, StringData.fromString("nested"), null)));
+            executor.executeBatch();
+
+            proxy.checkResultWithTimeout(
+                    Arrays.asList("1,42,nested,1"),
+                    "row_sink_flat",
+                    Arrays.asList("id", "value", "label", "optional_is_null"),
+                    30_000L);
+
+            try (Statement statement = provider.getOrCreateConnection().createStatement();
+                    ResultSet resultSet = statement.executeQuery("SELECT profile FROM row_sink")) {
+                assertTrue(resultSet.next());
+                RowData converted =
+                        new ClickHouseRowConverter(RowType.of(profileType)).toInternal(resultSet);
+                RowData profile = converted.getRow(0, profileType.getFieldCount());
+                assertEquals(42, profile.getInt(0));
+                assertEquals("nested", profile.getString(1).toString());
+                assertTrue(profile.isNullAt(2));
+            }
+        } finally {
+            executor.closeStatement();
+            provider.closeConnections();
+        }
     }
 
     @Test

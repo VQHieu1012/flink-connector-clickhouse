@@ -43,13 +43,14 @@ import java.net.InetAddress;
 import java.sql.Array;
 import java.sql.Date;
 import java.sql.SQLException;
+import java.sql.Struct;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,6 +65,9 @@ public class ClickHouseConverterUtils {
     public static final int BOOL_TRUE = 1;
 
     public static Object toExternal(Object value, LogicalType type) {
+        if (value == null) {
+            return null;
+        }
         switch (type.getTypeRoot()) {
             case BOOLEAN:
             case TINYINT:
@@ -125,15 +129,17 @@ public class ClickHouseConverterUtils {
                 }
                 return objectMap;
             case ROW:
-                List<Object> result = new ArrayList<>();
-                for (int i = 0; i < ((RowData) value).getArity(); i++) {
-                    result.add(
+                RowType rowType = (RowType) type;
+                RowData rowData = (RowData) value;
+                Object[] tupleValues = new Object[rowData.getArity()];
+                for (int i = 0; i < rowData.getArity(); i++) {
+                    LogicalType fieldType = rowType.getTypeAt(i);
+                    tupleValues[i] =
                             toExternal(
-                                    RowData.createFieldGetter(((RowType) type).getTypeAt(i), i)
-                                            .getFieldOrNull((RowData) value),
-                                    ((RowType) type).getTypeAt(i)));
+                                    RowData.createFieldGetter(fieldType, i).getFieldOrNull(rowData),
+                                    fieldType);
                 }
-                return result;
+                return new TupleStruct(tupleValues);
             case RAW:
             case MULTISET:
             default:
@@ -143,6 +149,9 @@ public class ClickHouseConverterUtils {
 
     @SuppressWarnings({"t", "unchecked"})
     public static Object toInternal(Object value, LogicalType type) throws SQLException {
+        if (value == null) {
+            return null;
+        }
         switch (type.getTypeRoot()) {
             case NULL:
                 return null;
@@ -224,7 +233,18 @@ public class ClickHouseConverterUtils {
                 }
                 return new GenericMapData(internalMap);
             case ROW:
-                List<Object> row = (List<Object>) value;
+                List<?> row;
+                if (value instanceof Struct) {
+                    row = Arrays.asList(((Struct) value).getAttributes());
+                } else if (value instanceof Object[]) {
+                    row = Arrays.asList((Object[]) value);
+                } else if (value instanceof List) {
+                    row = (List<?>) value;
+                } else {
+                    throw new IllegalArgumentException(
+                            "Unsupported ClickHouse Tuple representation: "
+                                    + value.getClass().getName());
+                }
                 GenericRowData rowData = new GenericRowData(row.size());
                 for (int i = 0; i < row.size(); i++) {
                     rowData.setField(i, toInternal(row.get(i), type.getChildren().get(i)));
@@ -234,6 +254,31 @@ public class ClickHouseConverterUtils {
             case RAW:
             default:
                 throw new UnsupportedOperationException("Unsupported type:" + type);
+        }
+    }
+
+    /** Standard JDBC representation that clickhouse-jdbc serializes as a Tuple expression. */
+    private static final class TupleStruct implements Struct {
+
+        private final Object[] attributes;
+
+        private TupleStruct(Object[] attributes) {
+            this.attributes = attributes;
+        }
+
+        @Override
+        public String getSQLTypeName() {
+            return "Tuple";
+        }
+
+        @Override
+        public Object[] getAttributes() {
+            return Arrays.copyOf(attributes, attributes.length);
+        }
+
+        @Override
+        public Object[] getAttributes(Map<String, Class<?>> map) {
+            return getAttributes();
         }
     }
 }
